@@ -1,0 +1,13 @@
+{
+  "duration_sec": 600,
+  "windows": [
+    {"start": 0, "end": 20, "avg_volume_db": -22, "speech_ratio": 0.8, "scene_changes": 1, "is_silent": false},
+    {"start": 20, "end": 40, "avg_volume_db": -28, "speech_ratio": 0.3, "scene_changes": 0, "is_silent": false},
+    {"start": 40, "end": 60, "avg_volume_db": -18, "speech_ratio": 0.9, "scene_changes": 2, "is_silent": false},
+    {"start": 60, "end": 80, "avg_volume_db": -35, "speech_ratio": 0.1, "scene_changes": 0, "is_silent": true},
+    {"start": 80, "end": 100, "avg_volume_db": -20, "speech_ratio": 0.85, "scene_changes": 3, "is_silent": false},
+    {"start": 100, "end": 120, "avg_volume_db": -25, "speech_ratio": 0.5, "scene_changes": 1, "is_silent": false},
+    {"start": 120, "end": 140, "avg_volume_db": -17, "speech_ratio": 0.95, "scene_changes": 2, "is_silent": false},
+    {"start": 140, "end": 160, "avg_volume_db": -30, "speech_ratio": 0.2, "scene_changes": 0, "is_silent": false}
+  ]
+}

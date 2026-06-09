@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+data/
+bin/ffmpeg
+bin/ffprobe
+bin/*.zip
+*.db
+.DS_Store
+.idea/
+.vscode/
