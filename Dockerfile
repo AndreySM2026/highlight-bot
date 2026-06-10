@@ -11,8 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/data/temp \
-    && chmod +x /app/scripts/docker-entrypoint.sh
+RUN mkdir -p /app/data/temp
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
@@ -21,5 +20,4 @@ ENV PORT=8080
 
 EXPOSE 8080
 
-ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["python", "-u", "run.py"]

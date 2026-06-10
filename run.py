@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Точка входа для Docker / Timeweb App Platform."""
+"""
+Точка входа для Timeweb App Platform.
+Сначала поднимает /health (для healthcheck), потом загружает бота в фоне.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,46 +10,66 @@ import os
 import sys
 import traceback
 
-from aiohttp import web
+print("=== Highlight Bot: run.py START ===", flush=True)
+
+from aiohttp import web  # noqa: E402
 
 
-async def _health(_: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "mode": "fallback"})
+def _get_port() -> int:
+    raw = os.getenv("PORT", "8080").strip()
+    try:
+        return int(raw) if raw else 8080
+    except ValueError:
+        print(f"WARNING: invalid PORT={raw!r}, using 8080", flush=True)
+        return 8080
 
 
-async def _root(_: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "service": "highlight-bot", "mode": "fallback"})
+def _get_host() -> str:
+    return (os.getenv("HOST") or "0.0.0.0").strip() or "0.0.0.0"
 
 
-def _run_fallback_server() -> None:
-    """Минимальный сервер, если основной код не стартует."""
-    port = int(os.getenv("PORT", "8080"))
-    host = os.getenv("HOST", "0.0.0.0")
-    app = web.Application()
-    app.router.add_get("/", _root)
-    app.router.add_get("/health", _health)
-    print(f"FALLBACK: HTTP на {host}:{port}", flush=True)
-    web.run_app(app, host=host, port=port)
+async def health_handler(_: web.Request) -> web.Response:
+    return web.json_response({"status": "ok"})
+
+
+async def root_handler(_: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "service": "highlight-bot"})
+
+
+async def bootstrap_bot(app: web.Application) -> None:
+    """Не блокирует on_startup — healthcheck проходит сразу."""
+    asyncio.create_task(_bootstrap_bot_impl(app))
+
+
+async def _bootstrap_bot_impl(app: web.Application) -> None:
+    await asyncio.sleep(0.2)
+    print("=== Bootstrap: loading bot ===", flush=True)
+    try:
+        from bot.bootstrap import init_bot
+
+        await init_bot(app)
+        print("=== Bootstrap: bot ready ===", flush=True)
+    except Exception:
+        print("=== Bootstrap: FAILED ===", flush=True)
+        traceback.print_exc()
 
 
 def main() -> None:
-    print("run.py: старт", flush=True)
-    try:
-        from bot.main import main as bot_main
+    host = _get_host()
+    port = _get_port()
+    print(f"=== HTTP server on {host}:{port} ===", flush=True)
 
-        bot_main()
-    except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else 1
-        print(f"run.py: SystemExit({code})", flush=True)
-        if code != 0:
-            _run_fallback_server()
-        raise
-    except Exception:
-        print("run.py: ошибка запуска основного приложения:", flush=True)
-        traceback.print_exc()
-        print("run.py: запуск fallback-сервера для healthcheck", flush=True)
-        _run_fallback_server()
+    app = web.Application()
+    app.router.add_get("/", root_handler)
+    app.router.add_get("/health", health_handler)
+    app.on_startup.append(bootstrap_bot)
+
+    web.run_app(app, host=host, port=port)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)

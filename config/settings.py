@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +22,20 @@ class Settings(BaseSettings):
 
     host: str = "0.0.0.0"
     port: int = 8080
+
+    @field_validator("port", mode="before")
+    @classmethod
+    def parse_port(cls, value: object) -> int:
+        if value is None or value == "":
+            return 8080
+        return int(value)
+
+    @field_validator("host", mode="before")
+    @classmethod
+    def parse_host(cls, value: object) -> str:
+        if not value or value == "":
+            return "0.0.0.0"
+        return str(value)
 
     database_path: Path = Path("data/bot.db")
     temp_dir: Path = Path("data/temp")
