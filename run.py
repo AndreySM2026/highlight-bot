@@ -33,7 +33,10 @@ async def root_handler(_: web.Request) -> web.Response:
 
 
 async def activate_bot_task(app: web.Application) -> None:
-    """Не блокирует on_startup."""
+    """Не блокирует on_startup; бот активируется только если configure_app успешен."""
+    if not app.get("bot"):
+        print("WARNING: bot not configured, skip activation", flush=True)
+        return
     asyncio.create_task(_activate_bot_impl(app))
 
 
@@ -93,9 +96,13 @@ def main() -> None:
     app.router.add_get("/health", health_handler)
     app.router.add_get("/status", status_handler)
 
-    from bot.bootstrap import configure_app
+    try:
+        from bot.bootstrap import configure_app
 
-    configure_app(app)
+        configure_app(app)
+    except Exception:
+        print("WARNING: bot setup failed, /health still works", flush=True)
+        traceback.print_exc()
 
     app.on_startup.append(activate_bot_task)
 
