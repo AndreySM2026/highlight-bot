@@ -16,6 +16,8 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from bot.handlers import setup_routers
 from config.settings import settings
 
+logger = structlog.get_logger(__name__)
+
 
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -36,35 +38,42 @@ async def health_handler(_: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
-async def on_startup(bot: Bot) -> None:
-    from services.video.ffmpeg_check import ensure_ffmpeg_available
-
-    ensure_ffmpeg_available()
-    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.temp_dir.mkdir(parents=True, exist_ok=True)
-
-    me = await bot.get_me()
-
-    if settings.webhook_url:
-        await bot.set_webhook(
-            url=settings.full_webhook_url,
-            drop_pending_updates=True,
-        )
-        print(f"Бот запущен: @{me.username} | webhook: {settings.full_webhook_url}")
-        structlog.get_logger(__name__).info(
-            "webhook_set",
-            url=settings.full_webhook_url,
-            bot=me.username,
-        )
-    else:
-        structlog.get_logger(__name__).warning(
-            "webhook_url_missing",
-            hint="Set WEBHOOK_URL for production. Use polling only for local dev.",
-        )
+async def root_handler(_: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "service": "highlight-bot"})
 
 
-async def on_shutdown(bot: Bot) -> None:
-    await bot.delete_webhook(drop_pending_updates=False)
+async def init_bot_background(app: web.Application) -> None:
+    """Инициализация бота в фоне — /health отвечает сразу, без ожидания."""
+    bot: Bot = app["bot"]
+    try:
+        from services.video.ffmpeg_check import ensure_ffmpeg_available
+
+        ensure_ffmpeg_available()
+        settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.temp_dir.mkdir(parents=True, exist_ok=True)
+
+        me = await bot.get_me()
+        logger.info("bot_ready", username=me.username, id=me.id)
+
+        if settings.webhook_url:
+            await bot.set_webhook(
+                url=settings.full_webhook_url,
+                drop_pending_updates=True,
+            )
+            print(f"Бот запущен: @{me.username} | webhook: {settings.full_webhook_url}")
+            logger.info("webhook_set", url=settings.full_webhook_url)
+        else:
+            print(f"Бот запущен: @{me.username} | WEBHOOK_URL не задан — добавьте и перезапустите")
+            logger.warning("webhook_url_missing")
+    except Exception as exc:
+        logger.exception("bot_init_failed", error=str(exc))
+        print(f"Ошибка инициализации бота: {exc}")
+
+
+async def on_shutdown(app: web.Application) -> None:
+    bot: Bot = app.get("bot")
+    if bot:
+        await bot.session.close()
 
 
 def create_app() -> web.Application:
@@ -74,10 +83,10 @@ def create_app() -> web.Application:
     )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(setup_routers())
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
 
     app = web.Application()
+    app["bot"] = bot
+    app.router.add_get("/", root_handler)
     app.router.add_get("/health", health_handler)
 
     webhook_requests_handler = SimpleRequestHandler(
@@ -87,6 +96,9 @@ def create_app() -> web.Application:
     )
     webhook_requests_handler.register(app, path=settings.webhook_path)
     setup_application(app, dp, bot=bot)
+
+    app.on_startup.append(init_bot_background)
+    app.on_shutdown.append(on_shutdown)
     return app
 
 
@@ -127,15 +139,14 @@ def _validate_settings() -> None:
         missing.append("TIMEWEB_AGENT_ID")
     if settings.webhook_url:
         if not settings.webhook_secret or settings.webhook_secret == "change_me":
-            missing.append("WEBHOOK_SECRET (задайте случайную строку)")
+            missing.append("WEBHOOK_SECRET")
         if "your-app" in settings.webhook_url:
-            missing.append("WEBHOOK_URL (укажите реальный URL приложения)")
+            missing.append("WEBHOOK_URL (укажите реальный URL)")
     if missing:
         raise SystemExit(f"Missing required env vars: {', '.join(missing)}")
 
 
 def _use_polling() -> bool:
-    """Polling только для локальной разработки."""
     return os.getenv("USE_POLLING", "").lower() in ("1", "true", "yes")
 
 
@@ -147,7 +158,7 @@ def main() -> None:
         asyncio.run(run_polling())
         return
 
-    # На Timeweb/Docker всегда HTTP-сервер (порт 8080), даже до настройки WEBHOOK_URL.
+    print(f"Запуск HTTP-сервера на {settings.host}:{settings.port}")
     app = create_app()
     web.run_app(app, host=settings.host, port=settings.port)
 
