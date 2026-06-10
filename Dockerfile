@@ -18,4 +18,4 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8080
 
-CMD ["python", "-m", "bot.main"]
+CMD ["python", "-u", "-m", "bot.main"]
