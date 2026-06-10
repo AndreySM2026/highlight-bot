@@ -129,6 +129,27 @@ async def run_polling() -> None:
     await dp.start_polling(bot)
 
 
+def _log_env_status() -> None:
+    """Печатает в лог, какие переменные заданы (без значений)."""
+    checks = {
+        "BOT_TOKEN": bool(settings.bot_token),
+        "TIMEWEB_API_TOKEN": bool(settings.timeweb_api_token),
+        "TIMEWEB_AGENT_ID": bool(settings.timeweb_agent_id),
+        "WEBHOOK_URL": bool(settings.webhook_url),
+        "WEBHOOK_SECRET": bool(settings.webhook_secret and settings.webhook_secret != "change_me"),
+        "HOST": settings.host,
+        "PORT": str(settings.port),
+    }
+    print("=== Проверка переменных окружения ===")
+    for key, value in checks.items():
+        if isinstance(value, bool):
+            status = "OK" if value else "НЕ ЗАДАНА"
+            print(f"  {key}: {status}")
+        else:
+            print(f"  {key}: {value}")
+    print("====================================")
+
+
 def _validate_settings() -> None:
     missing = []
     if not settings.bot_token:
@@ -138,12 +159,14 @@ def _validate_settings() -> None:
     if not settings.timeweb_agent_id:
         missing.append("TIMEWEB_AGENT_ID")
     if settings.webhook_url:
-        if not settings.webhook_secret or settings.webhook_secret == "change_me":
+        if not settings.webhook_secret or settings.webhook_secret in ("change_me", "change_me_to_random_32_chars"):
             missing.append("WEBHOOK_SECRET")
         if "your-app" in settings.webhook_url:
             missing.append("WEBHOOK_URL (укажите реальный URL)")
     if missing:
-        raise SystemExit(f"Missing required env vars: {', '.join(missing)}")
+        print(f"ОШИБКА: не заданы переменные: {', '.join(missing)}")
+        print("Добавьте их в Timeweb → App Platform → highlights → Настройки → Переменные")
+        raise SystemExit(1)
 
 
 def _use_polling() -> bool:
@@ -152,6 +175,8 @@ def _use_polling() -> bool:
 
 def main() -> None:
     configure_logging()
+    print("Highlight Bot — запуск...")
+    _log_env_status()
     _validate_settings()
 
     if _use_polling():
