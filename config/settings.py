@@ -68,6 +68,19 @@ class Settings(BaseSettings):
     temp_dir: Path = Path("data/temp")
 
     max_video_duration_sec: int = 1200
+    max_upload_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        description="Макс. размер файла для скачивания через Bot API (20 МБ)",
+    )
+    rutube_enabled: bool = True
+    max_rutube_download_bytes: int = Field(
+        default=1024 * 1024 * 1024,
+        description="Макс. размер скачивания с Rutube (1 ГБ)",
+    )
+    rutube_max_height: int = Field(
+        default=1080,
+        description="Макс. высота видео при скачивании с Rutube",
+    )
     max_clips: int = 10
     max_videos_per_day: int = 10
     min_clip_sec: int = 15

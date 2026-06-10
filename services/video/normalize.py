@@ -3,15 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from services.video.ffmpeg import run_ffmpeg, run_ffprobe
+from services.video.rotation import get_video_rotation, rotation_vf_prefix
 
 
 async def normalize_video(input_path: Path, output_path: Path) -> dict:
+    rotation = await get_video_rotation(input_path)
+    rotate_vf = rotation_vf_prefix(rotation)
     await run_ffmpeg(
         [
             "-i",
             str(input_path),
             "-vf",
-            "fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            f"{rotate_vf}fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -24,8 +27,6 @@ async def normalize_video(input_path: Path, output_path: Path) -> dict:
             "aac",
             "-b:a",
             "128k",
-            "-metadata:s:v:0",
-            "rotate=0",
             str(output_path),
         ],
         label="normalize",

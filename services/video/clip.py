@@ -5,11 +5,14 @@ from pathlib import Path
 from config.settings import settings
 from services.highlights.schemas import HighlightSegment
 from services.video.ffmpeg import run_ffmpeg, run_ffprobe
+from services.video.rotation import get_video_rotation, rotation_vf_prefix
 
 
 def build_vertical_916_filter(
     width: int | None = None,
     height: int | None = None,
+    *,
+    rotation_prefix: str = "",
 ) -> str:
     """
     Cover-crop в 9:16 без растягивания: масштаб по большей стороне, затем обрезка по центру.
@@ -17,9 +20,11 @@ def build_vertical_916_filter(
     w = width or settings.target_width
     h = height or settings.target_height
     return (
+        f"{rotation_prefix}"
         f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={w}:{h},"
-        f"setsar=1"
+        f"crop={w}:{h}:(iw-{w})/2:(ih-{h})/2,"
+        f"setsar=1,"
+        f"setdar=9/16"
     )
 
 
@@ -28,7 +33,8 @@ async def render_clip(
     segment: HighlightSegment,
     output_path: Path,
 ) -> Path:
-    crop_filter = build_vertical_916_filter()
+    rotation = await get_video_rotation(input_path)
+    crop_filter = build_vertical_916_filter(rotation_prefix=rotation_vf_prefix(rotation))
     await run_ffmpeg(
         [
             "-ss",
@@ -51,8 +57,6 @@ async def render_clip(
             "aac",
             "-b:a",
             "128k",
-            "-metadata:s:v:0",
-            "rotate=0",
             str(output_path),
         ],
         label="render_clip",

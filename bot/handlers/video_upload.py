@@ -11,22 +11,25 @@ from config.constants import ALLOWED_VIDEO_EXTENSIONS
 from config.settings import settings
 from services.jobs.manager import start_analysis_job
 from services.jobs.progress import progress_message
+from services.jobs.quota import check_daily_quota
 from services.storage.database import Database
+from services.video.validation import file_too_large_message
+
 
 router = Router()
 
 
-def _extract_video(message: Message) -> tuple[str, str | None] | None:
+def _extract_video(message: Message) -> tuple[str, str | None, int | None] | None:
     if message.video:
-        return message.video.file_id, message.video.mime_type
+        return message.video.file_id, message.video.mime_type, message.video.file_size
     if message.document:
         mime = message.document.mime_type
         name = (message.document.file_name or "").lower()
         suffix = Path(name).suffix
         if mime and mime.startswith("video/"):
-            return message.document.file_id, mime
+            return message.document.file_id, mime, message.document.file_size
         if suffix in ALLOWED_VIDEO_EXTENSIONS:
-            return message.document.file_id, mime or "video/mp4"
+            return message.document.file_id, mime or "video/mp4", message.document.file_size
     return None
 
 
@@ -41,19 +44,17 @@ async def handle_video_upload(message: Message, state: FSMContext) -> None:
         return
 
     db = Database()
-    used = await db.get_daily_usage(message.from_user.id)
-    if used >= settings.max_videos_per_day:
-        await message.answer(
-            f"⚠️ Лимит на сегодня исчерпан ({settings.max_videos_per_day} видео).\n"
-            "Попробуйте завтра."
-        )
+    quota_error = await check_daily_quota(message.from_user.id)
+    if quota_error:
+        await message.answer(quota_error)
         return
 
-    if await db.has_active_job(message.from_user.id):
-        await message.answer("⏳ У вас уже идёт обработка. Дождитесь завершения.")
+    file_id, mime_type, file_size = video_info
+
+    if file_size and file_size > settings.max_upload_bytes:
+        await message.answer(file_too_large_message(file_size, settings.max_upload_bytes))
         return
 
-    file_id, mime_type = video_info
     progress_msg = await message.answer(progress_message(0, "Скачивание"))
 
     try:
@@ -71,7 +72,3 @@ async def handle_video_upload(message: Message, state: FSMContext) -> None:
         await progress_msg.edit_text(f"❌ Не удалось начать обработку: {exc}")
         await state.set_state(ProcessingStates.waiting_video)
 
-
-@router.message(ProcessingStates.waiting_video)
-async def handle_non_video(message: Message) -> None:
-    await message.answer("Отправьте видеофайл. Текстовые сообщения пока не обрабатываются.")

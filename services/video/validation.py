@@ -11,6 +11,21 @@ class VideoValidationError(Exception):
     pass
 
 
+def file_too_large_message(size_bytes: int, limit_bytes: int) -> str:
+    limit_mb = limit_bytes / (1024 * 1024)
+    if size_bytes > limit_bytes:
+        size_mb = size_bytes / (1024 * 1024)
+        head = f"⚠️ Файл слишком большой ({size_mb:.0f} МБ).\n"
+    else:
+        head = "⚠️ Файл слишком большой.\n"
+    return (
+        f"{head}"
+        f"Telegram Bot API позволяет скачать до {limit_mb:.0f} МБ.\n\n"
+        "Сожмите видео (HandBrake, iMovie, онлайн-компрессор) "
+        "или отправьте более короткий ролик."
+    )
+
+
 async def validate_video(path: Path, mime_type: str | None = None) -> float:
     suffix = path.suffix.lower()
     if mime_type and mime_type not in ALLOWED_VIDEO_MIME:

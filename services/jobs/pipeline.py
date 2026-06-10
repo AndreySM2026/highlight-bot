@@ -17,6 +17,7 @@ from services.video.cleanup import cleanup_job_dir
 from services.video.clip import get_video_meta, render_clip
 from services.video.download import download_telegram_file
 from services.video.normalize import normalize_video
+from services.video.rutube import download_rutube_video
 from services.video.validation import VideoValidationError, validate_video
 from bot.keyboards.clip_count import build_clip_count_keyboard
 
@@ -51,10 +52,14 @@ async def run_analysis_pipeline(
     job_id: str,
     user_id: int,
     chat_id: int,
-    file_id: str,
-    mime_type: str | None,
     job_dir: Path,
+    file_id: str | None = None,
+    rutube_url: str | None = None,
+    mime_type: str | None = None,
 ) -> None:
+    if bool(file_id) == bool(rutube_url):
+        raise ValueError("Укажите file_id или rutube_url")
+
     db = Database()
     job = await db.get_job(job_id)
     if not job:
@@ -62,9 +67,13 @@ async def run_analysis_pipeline(
 
     progress_message_id = job["progress_message_id"]
 
-    await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 0.2, "Скачивание")
+    download_label = "Скачивание с Rutube" if rutube_url else "Скачивание"
+    await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 0.2, download_label)
     input_path = job_dir / "input.mp4"
-    await download_telegram_file(bot, file_id, input_path)
+    if rutube_url:
+        await download_rutube_video(rutube_url, input_path)
+    else:
+        await download_telegram_file(bot, file_id, input_path)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 1.0, "Скачивание")
     duration = await validate_video(input_path, mime_type)
@@ -161,15 +170,11 @@ async def run_render_pipeline(
 
     for idx, (clip_path, segment) in enumerate(zip(rendered_paths, segments), start=1):
         caption = f"Клип {idx}/{total}: {segment.title}"
-        meta = await get_video_meta(clip_path)
         await bot.send_video(
             chat_id=chat_id,
             video=FSInputFile(clip_path),
             caption=caption,
             supports_streaming=True,
-            width=meta["width"] or settings.target_width,
-            height=meta["height"] or settings.target_height,
-            duration=int(meta["duration"]) if meta["duration"] else None,
         )
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "sending", 1.0, "Отправка")

@@ -10,6 +10,7 @@ from aiogram import Bot
 from config.settings import settings
 from services.jobs.pipeline import run_analysis_pipeline, run_render_pipeline
 from services.storage.database import Database
+from services.video.validation import VideoValidationError
 
 logger = structlog.get_logger(__name__)
 
@@ -28,10 +29,14 @@ async def start_analysis_job(
     *,
     user_id: int,
     chat_id: int,
-    file_id: str,
-    mime_type: str | None,
     progress_message_id: int,
+    file_id: str | None = None,
+    rutube_url: str | None = None,
+    mime_type: str | None = None,
 ) -> str:
+    if bool(file_id) == bool(rutube_url):
+        raise ValueError("Укажите file_id или rutube_url")
+
     db = Database()
     if await db.has_active_job(user_id):
         raise RuntimeError("У вас уже идёт обработка другого видео.")
@@ -47,7 +52,16 @@ async def start_analysis_job(
     )
 
     task = asyncio.create_task(
-        _run_analysis_wrapper(bot, job_id, user_id, chat_id, file_id, mime_type, job_dir)
+        _run_analysis_wrapper(
+            bot,
+            job_id,
+            user_id,
+            chat_id,
+            job_dir,
+            file_id=file_id,
+            rutube_url=rutube_url,
+            mime_type=mime_type,
+        )
     )
     _active_tasks[job_id] = task
     task.add_done_callback(lambda _: _active_tasks.pop(job_id, None))
@@ -83,9 +97,11 @@ async def _run_analysis_wrapper(
     job_id: str,
     user_id: int,
     chat_id: int,
-    file_id: str,
-    mime_type: str | None,
     job_dir: Path,
+    *,
+    file_id: str | None = None,
+    rutube_url: str | None = None,
+    mime_type: str | None = None,
 ) -> None:
     db = Database()
     try:
@@ -94,25 +110,33 @@ async def _run_analysis_wrapper(
             job_id=job_id,
             user_id=user_id,
             chat_id=chat_id,
-            file_id=file_id,
-            mime_type=mime_type,
             job_dir=job_dir,
+            file_id=file_id,
+            rutube_url=rutube_url,
+            mime_type=mime_type,
         )
+    except VideoValidationError as exc:
+        logger.warning("analysis_job_validation_failed", job_id=job_id, error=str(exc))
+        error_text = str(exc)
     except Exception as exc:
         logger.exception("analysis_job_failed", job_id=job_id, error=str(exc))
-        job = await db.get_job(job_id)
         error_text = f"❌ Ошибка обработки: {exc}"
-        try:
-            if job and job.get("progress_message_id"):
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=job["progress_message_id"],
-                    text=error_text,
-                )
-            else:
-                await bot.send_message(chat_id, error_text)
-        except Exception:
-            pass
+
+    else:
+        return
+
+    job = await db.get_job(job_id)
+    try:
+        if job and job.get("progress_message_id"):
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=job["progress_message_id"],
+                text=error_text,
+            )
+        else:
+            await bot.send_message(chat_id, error_text)
+    except Exception:
+        pass
     finally:
         await db.unlock_user(user_id)
 

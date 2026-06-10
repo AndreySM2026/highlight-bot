@@ -20,3 +20,6 @@ ALLOWED_VIDEO_MIME = {
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mpeg", ".mpg"}
 
 TIMEWEB_API_BASE = "https://api.timeweb.cloud/api/v1"
+
+# Лимит Bot API на скачивание файлов (без Local Bot API server)
+TELEGRAM_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
