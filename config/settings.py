@@ -19,6 +19,10 @@ class Settings(BaseSettings):
 
     webhook_url: str = ""
     webhook_secret: str = "change_me"
+    # Если api.telegram.org недоступен (РФ): socks5://host:port или http://host:port
+    telegram_proxy: str = ""
+    # Свой Bot API сервер (VPS за рубежом): http://your-vps:8081
+    telegram_api_base_url: str = ""
 
     host: str = "0.0.0.0"
     port: int = 8080
@@ -36,6 +40,29 @@ class Settings(BaseSettings):
         if not value or value == "":
             return "0.0.0.0"
         return str(value)
+
+    @field_validator(
+        "bot_token",
+        "timeweb_api_token",
+        "timeweb_agent_id",
+        "webhook_url",
+        "webhook_secret",
+        "telegram_proxy",
+        "telegram_api_base_url",
+        mode="before",
+    )
+    @classmethod
+    def strip_strings(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("webhook_url")
+    @classmethod
+    def normalize_webhook_url(cls, value: str) -> str:
+        if value and not value.startswith(("http://", "https://")):
+            return f"https://{value}"
+        return value
 
     database_path: Path = Path("data/bot.db")
     temp_dir: Path = Path("data/temp")
