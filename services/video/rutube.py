@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import structlog
@@ -13,14 +14,26 @@ from services.video.validation import VideoValidationError
 logger = structlog.get_logger(__name__)
 
 RUTUBE_URL_RE = re.compile(
-    r"https?://(?:www\.)?rutube\.ru/(?:video|play/embed|shorts)/[\w-]+/?",
+    r"https?://(?:www\.)?rutube\.ru/(?:video(?:/private)?|play/embed|shorts)/[\w-]+",
     re.IGNORECASE,
 )
 
 
 def extract_rutube_url(text: str) -> str | None:
-    match = RUTUBE_URL_RE.search(text.strip())
-    return match.group(0).rstrip("/") if match else None
+    """Извлекает URL Rutube из текста (поддерживает private и текст вокруг ссылки)."""
+    cleaned = text.strip()
+    match = RUTUBE_URL_RE.search(cleaned)
+    if match:
+        return match.group(0).rstrip("/")
+    # rutube.ru/video/xxx без схемы
+    loose = re.search(
+        r"(?:www\.)?rutube\.ru/(?:video(?:/private)?|play/embed|shorts)/[\w-]+",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if loose:
+        return f"https://{loose.group(0).rstrip('/')}"
+    return None
 
 
 def _max_filesize_arg() -> str:
@@ -32,15 +45,16 @@ def _max_filesize_arg() -> str:
     return f"{limit // 1024}K"
 
 
+def _ytdlp_command() -> list[str]:
+    binary = shutil.which("yt-dlp")
+    if binary:
+        return [binary]
+    return [sys.executable, "-m", "yt_dlp"]
+
+
 async def download_rutube_video(url: str, destination: Path) -> Path:
     if not settings.rutube_enabled:
         raise VideoValidationError("Загрузка с Rutube отключена.")
-
-    binary = shutil.which("yt-dlp")
-    if not binary:
-        raise VideoValidationError(
-            "yt-dlp не установлен на сервере. Обратитесь к администратору."
-        )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     output_template = str(destination.with_suffix(".%(ext)s"))
@@ -48,7 +62,7 @@ async def download_rutube_video(url: str, destination: Path) -> Path:
     height = settings.rutube_max_height
 
     args = [
-        binary,
+        *_ytdlp_command(),
         "--no-playlist",
         "--no-warnings",
         "--retries",

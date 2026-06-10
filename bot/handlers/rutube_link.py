@@ -15,18 +15,27 @@ from services.video.rutube import extract_rutube_url
 router = Router()
 
 
-@router.message(ProcessingStates.waiting_video, F.text)
+@router.message(F.text)
 async def handle_rutube_link(message: Message, state: FSMContext) -> None:
+    """Принимает ссылку Rutube без обязательного /start (FSM сбрасывается после рестарта)."""
     if not message.from_user or not message.text:
         return
 
-    url = extract_rutube_url(message.text)
-    if not url:
-        await message.answer(
-            "Отправьте видеофайл (до 20 МБ) или ссылку Rutube:\n"
-            "https://rutube.ru/video/..."
-        )
+    text = message.text.strip()
+    if text.startswith("/"):
         return
+
+    url = extract_rutube_url(text)
+    if not url:
+        current = await state.get_state()
+        if current == ProcessingStates.waiting_video.state:
+            await message.answer(
+                "Отправьте видеофайл (до 20 МБ) или ссылку Rutube:\n"
+                "https://rutube.ru/video/..."
+            )
+        return
+
+    print(f"Rutube link from user {message.from_user.id}: {url}", flush=True)
 
     if not settings.rutube_enabled:
         await message.answer("Загрузка по ссылке Rutube временно отключена.")
@@ -36,6 +45,8 @@ async def handle_rutube_link(message: Message, state: FSMContext) -> None:
     if quota_error:
         await message.answer(quota_error)
         return
+
+    await message.answer(f"✅ Принял ссылку Rutube.\nНачинаю скачивание…")
 
     progress_msg = await message.answer(
         progress_message(0, "Скачивание с Rutube (может занять несколько минут)")
@@ -55,10 +66,3 @@ async def handle_rutube_link(message: Message, state: FSMContext) -> None:
     except Exception as exc:
         await progress_msg.edit_text(f"❌ Не удалось начать обработку: {exc}")
         await state.set_state(ProcessingStates.waiting_video)
-
-
-@router.message(ProcessingStates.waiting_video, ~(F.video | F.document | F.text))
-async def handle_unsupported(message: Message) -> None:
-    await message.answer(
-        "Отправьте видеофайл (mp4, mov, до 20 МБ) или ссылку Rutube."
-    )

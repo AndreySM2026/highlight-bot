@@ -64,6 +64,15 @@ class Settings(BaseSettings):
             return f"https://{value}"
         return value
 
+    @field_validator("rutube_enabled", mode="before")
+    @classmethod
+    def parse_rutube_enabled(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None or value == "":
+            return True
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
     database_path: Path = Path("data/bot.db")
     temp_dir: Path = Path("data/temp")
 
