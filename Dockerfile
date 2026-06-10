@@ -20,7 +20,5 @@ ENV PORT=8080
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
-
+# Healthcheck задаётся в панели Timeweb: путь /health (не добавлять HEALTHCHECK в Dockerfile).
 CMD ["python", "-u", "run.py"]

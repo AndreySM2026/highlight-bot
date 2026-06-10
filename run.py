@@ -48,18 +48,20 @@ async def status_handler(request: web.Request) -> web.Response:
         "webhook_url": settings.full_webhook_url if settings.webhook_url else None,
     }
 
-    bot = request.app.get("bot")
-    if bot and request.app.get("telegram_ready"):
-        try:
-            wh = await bot.get_webhook_info()
-            payload["telegram_webhook"] = {
-                "url": wh.url,
-                "pending_update_count": wh.pending_update_count,
-                "last_error_message": wh.last_error_message,
-                "last_error_date": wh.last_error_date,
-            }
-        except Exception as exc:
-            payload["telegram_webhook_error"] = str(exc)
+    # Полная диагностика только по ?details=1 (не для healthcheck Timeweb)
+    if request.rel_url.query.get("details") == "1":
+        bot = request.app.get("bot")
+        if bot and request.app.get("telegram_ready"):
+            try:
+                wh = await bot.get_webhook_info()
+                payload["telegram_webhook"] = {
+                    "url": wh.url,
+                    "pending_update_count": wh.pending_update_count,
+                    "last_error_message": wh.last_error_message,
+                    "last_error_date": wh.last_error_date,
+                }
+            except Exception as exc:
+                payload["telegram_webhook_error"] = str(exc)
 
     return web.json_response(payload)
 
