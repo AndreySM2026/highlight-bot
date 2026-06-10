@@ -7,15 +7,28 @@ from services.highlights.schemas import HighlightSegment
 from services.video.ffmpeg import run_ffmpeg, run_ffprobe
 
 
+def build_vertical_916_filter(
+    width: int | None = None,
+    height: int | None = None,
+) -> str:
+    """
+    Cover-crop в 9:16 без растягивания: масштаб по большей стороне, затем обрезка по центру.
+    """
+    w = width or settings.target_width
+    h = height or settings.target_height
+    return (
+        f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={w}:{h},"
+        f"setsar=1"
+    )
+
+
 async def render_clip(
     input_path: Path,
     segment: HighlightSegment,
     output_path: Path,
 ) -> Path:
-    crop_filter = (
-        f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
-        f"scale={settings.target_width}:{settings.target_height}"
-    )
+    crop_filter = build_vertical_916_filter()
     await run_ffmpeg(
         [
             "-ss",
@@ -28,6 +41,8 @@ async def render_clip(
             crop_filter,
             "-c:v",
             "libx264",
+            "-pix_fmt",
+            "yuv420p",
             "-preset",
             "fast",
             "-crf",
@@ -36,6 +51,8 @@ async def render_clip(
             "aac",
             "-b:a",
             "128k",
+            "-metadata:s:v:0",
+            "rotate=0",
             str(output_path),
         ],
         label="render_clip",
@@ -52,8 +69,12 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
         [
             "-i",
             str(path),
+            "-vf",
+            "setsar=1",
             "-c:v",
             "libx264",
+            "-pix_fmt",
+            "yuv420p",
             "-preset",
             "fast",
             "-crf",

@@ -161,11 +161,15 @@ async def run_render_pipeline(
 
     for idx, (clip_path, segment) in enumerate(zip(rendered_paths, segments), start=1):
         caption = f"Клип {idx}/{total}: {segment.title}"
+        meta = await get_video_meta(clip_path)
         await bot.send_video(
             chat_id=chat_id,
             video=FSInputFile(clip_path),
             caption=caption,
             supports_streaming=True,
+            width=meta["width"] or settings.target_width,
+            height=meta["height"] or settings.target_height,
+            duration=int(meta["duration"]) if meta["duration"] else None,
         )
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "sending", 1.0, "Отправка")
