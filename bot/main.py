@@ -13,7 +13,6 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-from bot.handlers import setup_routers
 from config.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -64,17 +63,14 @@ async def _init_bot_background(app: web.Application) -> None:
                 drop_pending_updates=True,
             )
             _flush_log(f"Бот запущен: @{me.username} | webhook: {settings.full_webhook_url}")
-            logger.info("webhook_set", url=settings.full_webhook_url)
         else:
             _flush_log(f"Бот запущен: @{me.username} | WEBHOOK_URL не задан")
-            logger.warning("webhook_url_missing")
     except Exception as exc:
         logger.exception("bot_init_failed", error=str(exc))
         _flush_log(f"Ошибка инициализации бота: {exc}")
 
 
 async def schedule_bot_init(app: web.Application) -> None:
-    """Не блокирует старт HTTP-сервера — healthcheck проходит сразу."""
     asyncio.create_task(_init_bot_background(app))
 
 
@@ -85,7 +81,6 @@ async def on_shutdown(app: web.Application) -> None:
 
 
 def create_minimal_app() -> web.Application:
-    """Минимальный сервер только для healthcheck (если не хватает env vars)."""
     app = web.Application()
     app.router.add_get("/", root_handler)
     app.router.add_get("/health", health_handler)
@@ -93,6 +88,8 @@ def create_minimal_app() -> web.Application:
 
 
 def create_app() -> web.Application:
+    from bot.handlers import setup_routers
+
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -119,6 +116,7 @@ def create_app() -> web.Application:
 
 
 async def run_polling() -> None:
+    from bot.handlers import setup_routers
     from services.video.ffmpeg_check import ensure_ffmpeg_available
 
     ensure_ffmpeg_available()
@@ -135,11 +133,9 @@ async def run_polling() -> None:
     me = await bot.get_me()
     webhook = await bot.get_webhook_info()
     if webhook.url:
-        _flush_log(f"Сбрасываю webhook ({webhook.url}) — переключаюсь на polling")
         await bot.delete_webhook(drop_pending_updates=False)
 
-    _flush_log(f"Бот запущен: @{me.username} (polling). Ожидаю сообщения...")
-
+    _flush_log(f"Бот запущен: @{me.username} (polling)")
     await dp.start_polling(bot)
 
 
@@ -159,8 +155,7 @@ def _log_env_status() -> None:
     _flush_log("=== Проверка переменных окружения ===")
     for key, value in checks.items():
         if isinstance(value, bool):
-            status = "OK" if value else "НЕ ЗАДАНА"
-            _flush_log(f"  {key}: {status}")
+            _flush_log(f"  {key}: {'OK' if value else 'НЕ ЗАДАНА'}")
         else:
             _flush_log(f"  {key}: {value}")
     _flush_log("====================================")
@@ -187,6 +182,18 @@ def _use_polling() -> bool:
     return os.getenv("USE_POLLING", "").lower() in ("1", "true", "yes")
 
 
+async def _run_web_server(app: web.Application) -> None:
+    host = settings.host
+    port = settings.port
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host=host, port=port)
+    await site.start()
+    _flush_log(f"HTTP-сервер слушает {host}:{port}")
+    stop = asyncio.Event()
+    await stop.wait()
+
+
 def main() -> None:
     configure_logging()
     _flush_log("Highlight Bot — запуск...")
@@ -194,9 +201,7 @@ def main() -> None:
 
     missing = _get_missing_settings()
     if missing:
-        _flush_log(f"ВНИМАНИЕ: не заданы переменные: {', '.join(missing)}")
-        _flush_log("HTTP-сервер /health запустится, но бот не будет работать.")
-        _flush_log("Добавьте переменные в Timeweb → Настройки → Переменные → Сохранить → Перезапуск")
+        _flush_log(f"ВНИМАНИЕ: не заданы: {', '.join(missing)}")
 
     if _use_polling():
         if missing:
@@ -204,9 +209,9 @@ def main() -> None:
         asyncio.run(run_polling())
         return
 
-    _flush_log(f"Запуск HTTP-сервера на {settings.host}:{settings.port}")
     app = create_app() if not missing else create_minimal_app()
-    web.run_app(app, host=settings.host, port=settings.port)
+    _flush_log(f"Запуск HTTP-сервера на {settings.host}:{settings.port}")
+    asyncio.run(_run_web_server(app))
 
 
 if __name__ == "__main__":
