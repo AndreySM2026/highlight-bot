@@ -104,6 +104,7 @@ async def _run_analysis_wrapper(
     mime_type: str | None = None,
 ) -> None:
     db = Database()
+    error_text: str | None = None
     try:
         await run_analysis_pipeline(
             bot,
@@ -121,24 +122,25 @@ async def _run_analysis_wrapper(
     except Exception as exc:
         logger.exception("analysis_job_failed", job_id=job_id, error=str(exc))
         error_text = f"❌ Ошибка обработки: {exc}"
-
     else:
+        # Анализ завершён — ждём выбор клипов; снимаем lock до рендера.
         return
-
-    job = await db.get_job(job_id)
-    try:
-        if job and job.get("progress_message_id"):
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=job["progress_message_id"],
-                text=error_text,
-            )
-        else:
-            await bot.send_message(chat_id, error_text)
-    except Exception:
-        pass
     finally:
         await db.unlock_user(user_id)
+
+    if error_text:
+        job = await db.get_job(job_id)
+        try:
+            if job and job.get("progress_message_id"):
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=job["progress_message_id"],
+                    text=error_text,
+                )
+            else:
+                await bot.send_message(chat_id, error_text)
+        except Exception:
+            pass
 
 
 async def _run_render_wrapper(
