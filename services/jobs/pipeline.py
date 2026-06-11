@@ -15,7 +15,8 @@ from services.jobs.progress import progress_message, stage_to_percent
 from services.storage.database import Database
 from services.video.activity_map import build_activity_map
 from services.video.cleanup import cleanup_job_dir
-from services.video.clip import get_video_meta, render_clip
+from services.video.aspect import detect_content_crop
+from services.video.clip import render_clip
 from services.video.download import download_telegram_file
 from services.video.normalize import normalize_video
 from services.video.rutube import download_rutube_video
@@ -111,6 +112,14 @@ async def run_analysis_pipeline(
     await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 1.0, "Скачивание")
     duration = await validate_video(input_path, mime_type)
 
+    try:
+        content_crop = await detect_content_crop(input_path)
+        if content_crop:
+            (job_dir / "content_crop.json").write_text(json.dumps(list(content_crop)), encoding="utf-8")
+            logger.info("content_crop_detected", crop=content_crop)
+    except Exception as exc:
+        logger.warning("content_crop_failed", error=str(exc))
+
     await _update_progress(bot, chat_id, progress_message_id, job_id, "normalizing", 0.1, "Нормализация")
     normalized_path = job_dir / "normalized.mp4"
     await _run_stage_with_heartbeat(
@@ -141,13 +150,17 @@ async def run_analysis_pipeline(
     total_found = len(highlights.segments)
     recommended = highlights.recommended_clip_count
     source_label = "Qwen 3.5" if highlights.source == "qwen" else "эвристика"
+    theme_line = ""
+    if highlights.video_theme:
+        theme_line = f"📌 Тема: _{highlights.video_theme}_\n\n"
 
     await bot.edit_message_text(
         chat_id=chat_id,
         message_id=progress_message_id,
         text=(
             f"✅ Анализ завершён ({source_label}).\n\n"
-            f"Нашёл *{total_found}* ярких моментов.\n"
+            f"{theme_line}"
+            f"Нашёл *{total_found}* законченных идей.\n"
             f"Рекомендую сделать *{recommended}* клипов.\n\n"
             f"Выберите количество:"
         ),
@@ -186,6 +199,15 @@ async def run_render_pipeline(
     if not source_path.exists():
         source_path = normalized_path
 
+    content_crop: tuple[int, int, int, int] | None = None
+    crop_file = job_dir / "content_crop.json"
+    if crop_file.exists():
+        try:
+            raw = json.loads(crop_file.read_text(encoding="utf-8"))
+            content_crop = tuple(int(v) for v in raw)  # type: ignore[assignment]
+        except Exception:
+            content_crop = None
+
     await bot.edit_message_text(
         chat_id=chat_id,
         message_id=progress_message_id,
@@ -207,7 +229,12 @@ async def run_render_pipeline(
             f"Рендер клипа {idx}/{total}",
         )
         output_path = job_dir / f"clip_{idx:03d}.mp4"
-        rendered = await render_clip(source_path, segment, output_path)
+        rendered = await render_clip(
+            source_path,
+            segment,
+            output_path,
+            content_crop=content_crop,
+        )
         rendered_paths.append(rendered)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "sending", 0.2, "Отправка")

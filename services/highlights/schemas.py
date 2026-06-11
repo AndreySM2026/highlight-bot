@@ -35,3 +35,4 @@ class HighlightResult(BaseModel):
     recommended_clip_count: int = Field(ge=1, le=10)
     segments: list[HighlightSegment]
     source: str = "qwen"
+    video_theme: str = ""

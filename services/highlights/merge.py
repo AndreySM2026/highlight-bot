@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from config.settings import settings
 from services.highlights.align import align_segments_to_speech
+from services.highlights.coherence import split_multi_thought_segments
 from services.highlights.schemas import ActivityMap, HighlightResult, HighlightSegment
 
 
@@ -45,5 +46,8 @@ def normalize_segments(result: HighlightResult, duration_sec: float) -> Highligh
 
 
 def finalize_highlight_result(result: HighlightResult, activity_map: ActivityMap) -> HighlightResult:
+    result = normalize_segments(result, activity_map.duration_sec)
+    result = align_segments_to_speech(result, activity_map)
+    result = split_multi_thought_segments(result, activity_map)
     result = normalize_segments(result, activity_map.duration_sec)
     return align_segments_to_speech(result, activity_map)

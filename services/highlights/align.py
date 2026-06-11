@@ -12,7 +12,6 @@ def _snap_start(start_time: float, silent_ranges: list[SilentRange]) -> float:
 
     for pause in silent_ranges:
         if pause.end <= start_time and start_time - pause.end <= lookback:
-            candidate = max(0.0, pause.end - preroll)
             if best is None or pause.end > best:
                 best = pause.end
 
@@ -42,9 +41,8 @@ def _snap_end(end_time: float, silent_ranges: list[SilentRange], duration_sec: f
 def _clamp_segment(segment: HighlightSegment, duration_sec: float) -> HighlightSegment:
     start = segment.start_time
     end = segment.end_time
-    length = end - start
 
-    if length > settings.max_clip_sec:
+    if end - start > settings.max_clip_sec:
         end = start + settings.max_clip_sec
     if end - start < settings.min_clip_sec:
         end = min(duration_sec, start + settings.min_clip_sec)

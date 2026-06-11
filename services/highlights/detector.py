@@ -29,6 +29,7 @@ def _parse_highlight_response(data: dict) -> HighlightResult:
         recommended_clip_count=int(data.get("recommended_clip_count", max(1, len(segments) // 2))),
         segments=segments,
         source="qwen",
+        video_theme=str(data.get("video_theme", "")),
     )
 
 
@@ -42,7 +43,12 @@ async def detect_highlights(activity_map: ActivityMap) -> HighlightResult:
         result = _parse_highlight_response(data)
         result = finalize_highlight_result(result, activity_map)
         if result.segments:
-            logger.info("highlights_detected", source="qwen", count=len(result.segments))
+            logger.info(
+                "highlights_detected",
+                source="qwen",
+                count=len(result.segments),
+                video_theme=result.video_theme[:120] if result.video_theme else None,
+            )
             return result
         logger.warning("highlights_empty_qwen_response")
     except TimewebError as exc:

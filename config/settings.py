@@ -127,6 +127,18 @@ class Settings(BaseSettings):
         default=1.5,
         description="Если пауза не найдена — расширить конец на столько секунд",
     )
+    speech_split_min_pause_sec: float = Field(
+        default=0.9,
+        description="Мин. пауза внутри клипа для разделения на две мысли",
+    )
+    speech_split_edge_margin_sec: float = Field(
+        default=2.0,
+        description="Не делить по паузам у самого начала/конца клипа",
+    )
+    speech_split_max_passes: int = Field(
+        default=2,
+        description="Сколько раз пытаться разделить клипы с несколькими мыслями",
+    )
 
     @property
     def webhook_path(self) -> str:

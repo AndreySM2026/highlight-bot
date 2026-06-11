@@ -2,43 +2,55 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config.settings import settings
+import structlog
+
 from services.highlights.schemas import HighlightSegment
-from services.video.ffmpeg import run_ffmpeg, run_ffprobe
+from services.video.aspect import TARGET_HEIGHT, TARGET_WIDTH, build_vertical_916_filter
+from services.video.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
 from services.video.rotation import get_video_rotation, rotation_vf_prefix
 
+logger = structlog.get_logger(__name__)
 
-def build_vertical_916_filter(
-    width: int | None = None,
-    height: int | None = None,
-    *,
-    rotation_prefix: str = "",
-) -> str:
-    """
-    Cover-crop в 9:16 без растягивания.
-    Сначала выравниваем SAR (Rutube/mp4 часто anamorphic), затем crop по центру.
-    """
-    w = width or settings.target_width
-    h = height or settings.target_height
-    return (
-        f"{rotation_prefix}"
-        f"scale=iw*sar:ih,setsar=1,"
-        f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={w}:{h}:(iw-{w})/2:(ih-{h})/2,"
-        f"scale={w}:{h},"
-        f"setsar=1"
+
+async def _assert_output_dimensions(path: Path) -> None:
+    probe = await run_ffprobe(path)
+    stream = next(
+        (s for s in probe.get("streams", []) if s.get("codec_type") == "video"),
+        {},
     )
+    width = int(stream.get("width", 0))
+    height = int(stream.get("height", 0))
+    sar = stream.get("sample_aspect_ratio", "1:1")
+    if width != TARGET_WIDTH or height != TARGET_HEIGHT:
+        raise FFmpegError(
+            f"render_clip bad dimensions: {width}x{height} (expected {TARGET_WIDTH}x{TARGET_HEIGHT})"
+        )
+    if sar not in {"1:1", "1/1"}:
+        logger.warning("render_clip_non_square_sar", path=str(path), sar=sar)
 
 
 async def render_clip(
     input_path: Path,
     segment: HighlightSegment,
     output_path: Path,
+    *,
+    content_crop: tuple[int, int, int, int] | None = None,
 ) -> Path:
     rotation = await get_video_rotation(input_path)
-    crop_filter = build_vertical_916_filter(rotation_prefix=rotation_vf_prefix(rotation))
+    crop_filter = build_vertical_916_filter(
+        rotation_prefix=rotation_vf_prefix(rotation),
+        content_crop=content_crop,
+    )
+    logger.info(
+        "render_clip_start",
+        input=str(input_path),
+        rotation=rotation,
+        start=segment.start_time,
+        end=segment.end_time,
+    )
     await run_ffmpeg(
         [
+            "-noautorotate",
             "-i",
             str(input_path),
             "-ss",
@@ -49,6 +61,8 @@ async def render_clip(
             crop_filter,
             "-c:v",
             "libx264",
+            "-profile:v",
+            "main",
             "-pix_fmt",
             "yuv420p",
             "-preset",
@@ -59,12 +73,15 @@ async def render_clip(
             "aac",
             "-b:a",
             "128k",
+            "-movflags",
+            "+faststart",
             "-map_metadata",
             "-1",
             str(output_path),
         ],
         label="render_clip",
     )
+    await _assert_output_dimensions(output_path)
     return await compress_for_telegram(output_path)
 
 
@@ -75,12 +92,15 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
     compressed = path.with_name(f"{path.stem}_compressed{path.suffix}")
     await run_ffmpeg(
         [
+            "-noautorotate",
             "-i",
             str(path),
             "-vf",
-            "scale=iw*sar:ih,setsar=1",
+            f"scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=disable,setsar=1",
             "-c:v",
             "libx264",
+            "-profile:v",
+            "main",
             "-pix_fmt",
             "yuv420p",
             "-preset",
@@ -93,6 +113,8 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
             "96k",
             "-fs",
             str(max_bytes),
+            "-movflags",
+            "+faststart",
             "-map_metadata",
             "-1",
             str(compressed),
@@ -100,6 +122,7 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
         label="compress_clip",
     )
     if compressed.exists() and compressed.stat().st_size > 0:
+        await _assert_output_dimensions(compressed)
         path.unlink(missing_ok=True)
         return compressed
     return path
