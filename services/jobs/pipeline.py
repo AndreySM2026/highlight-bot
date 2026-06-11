@@ -10,16 +10,16 @@ from aiogram.types import FSInputFile
 
 from config.settings import settings
 from services.highlights.detector import detect_highlights
-from services.highlights.schemas import HighlightResult
+from services.highlights.schemas import HighlightResult, VideoContext
 from services.jobs.progress import progress_message, stage_to_percent
 from services.storage.database import Database
 from services.video.activity_map import build_activity_map
 from services.video.cleanup import cleanup_job_dir
-from services.video.aspect import detect_content_crop
+from services.video.aspect import analyze_video_geometry
 from services.video.clip import render_clip
 from services.video.download import download_telegram_file
 from services.video.normalize import normalize_video
-from services.video.rutube import download_rutube_video
+from services.video.rutube import download_rutube_video, fetch_rutube_metadata
 from services.video.validation import VideoValidationError, validate_video
 from bot.keyboards.clip_count import build_clip_count_keyboard
 
@@ -101,10 +101,19 @@ async def run_analysis_pipeline(
 
     progress_message_id = job["progress_message_id"]
 
+    video_context = VideoContext()
     download_label = "Скачивание с Rutube" if rutube_url else "Скачивание"
     await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 0.2, download_label)
     input_path = job_dir / "input.mp4"
     if rutube_url:
+        try:
+            video_context = await fetch_rutube_metadata(rutube_url)
+            (job_dir / "video_context.json").write_text(
+                video_context.model_dump_json(ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("rutube_metadata_failed", error=str(exc))
         await download_rutube_video(rutube_url, input_path)
     else:
         await download_telegram_file(bot, file_id, input_path)
@@ -113,12 +122,10 @@ async def run_analysis_pipeline(
     duration = await validate_video(input_path, mime_type)
 
     try:
-        content_crop = await detect_content_crop(input_path)
-        if content_crop:
-            (job_dir / "content_crop.json").write_text(json.dumps(list(content_crop)), encoding="utf-8")
-            logger.info("content_crop_detected", crop=content_crop)
+        geometry = await analyze_video_geometry(input_path)
+        (job_dir / "geometry.json").write_text(json.dumps(geometry), encoding="utf-8")
     except Exception as exc:
-        logger.warning("content_crop_failed", error=str(exc))
+        logger.warning("geometry_analysis_failed", error=str(exc))
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "normalizing", 0.1, "Нормализация")
     normalized_path = job_dir / "normalized.mp4"
@@ -139,7 +146,7 @@ async def run_analysis_pipeline(
     await _update_progress(bot, chat_id, progress_message_id, job_id, "metadata", 1.0, "Анализ метаданных")
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "analyzing", 0.5, "Поиск хайлайтов")
-    highlights: HighlightResult = await detect_highlights(activity_map)
+    highlights: HighlightResult = await detect_highlights(activity_map, video_context)
     await _update_progress(bot, chat_id, progress_message_id, job_id, "analyzing", 1.0, "Поиск хайлайтов")
 
     if not highlights.segments:
@@ -199,14 +206,13 @@ async def run_render_pipeline(
     if not source_path.exists():
         source_path = normalized_path
 
-    content_crop: tuple[int, int, int, int] | None = None
-    crop_file = job_dir / "content_crop.json"
-    if crop_file.exists():
+    geometry: dict | None = None
+    geometry_file = job_dir / "geometry.json"
+    if geometry_file.exists():
         try:
-            raw = json.loads(crop_file.read_text(encoding="utf-8"))
-            content_crop = tuple(int(v) for v in raw)  # type: ignore[assignment]
+            geometry = json.loads(geometry_file.read_text(encoding="utf-8"))
         except Exception:
-            content_crop = None
+            geometry = None
 
     await bot.edit_message_text(
         chat_id=chat_id,
@@ -233,14 +239,18 @@ async def run_render_pipeline(
             source_path,
             segment,
             output_path,
-            content_crop=content_crop,
+            geometry=geometry,
         )
         rendered_paths.append(rendered)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "sending", 0.2, "Отправка")
 
     for idx, (clip_path, segment) in enumerate(zip(rendered_paths, segments), start=1):
-        caption = f"Клип {idx}/{total}: {segment.title}"
+        duration_sec = int(segment.end_time - segment.start_time)
+        caption_parts = [f"Клип {idx}/{total} · {duration_sec} сек", segment.title]
+        if segment.reason:
+            caption_parts.append(segment.reason)
+        caption = "\n".join(caption_parts)[:1024]
         await bot.send_video(
             chat_id=chat_id,
             video=FSInputFile(clip_path),

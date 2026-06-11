@@ -92,8 +92,8 @@ class Settings(BaseSettings):
     )
     max_clips: int = 10
     max_videos_per_day: int = 10
-    min_clip_sec: int = 15
-    max_clip_sec: int = 60
+    min_clip_sec: int = 8
+    max_clip_sec: int = 90
 
     target_width: int = 1080
     target_height: int = 1920

@@ -23,6 +23,11 @@ class ActivityMap(BaseModel):
     silent_ranges: list[SilentRange] = Field(default_factory=list)
 
 
+class VideoContext(BaseModel):
+    title: str = ""
+    description: str = ""
+
+
 class HighlightSegment(BaseModel):
     start_time: float
     end_time: float

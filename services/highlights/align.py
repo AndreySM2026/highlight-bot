@@ -5,7 +5,6 @@ from services.highlights.schemas import ActivityMap, HighlightResult, HighlightS
 
 
 def _snap_start(start_time: float, silent_ranges: list[SilentRange]) -> float:
-    """Сдвигает начало к ближайшей паузе перед речью (начало фразы)."""
     lookback = settings.speech_align_lookback_sec
     preroll = settings.speech_align_preroll_sec
     best: float | None = None
@@ -22,7 +21,6 @@ def _snap_start(start_time: float, silent_ranges: list[SilentRange]) -> float:
 
 
 def _snap_end(end_time: float, silent_ranges: list[SilentRange], duration_sec: float) -> float:
-    """Продлевает конец до паузы после фразы."""
     lookahead = settings.speech_align_lookahead_sec
     best: float | None = None
 
@@ -44,12 +42,10 @@ def _clamp_segment(segment: HighlightSegment, duration_sec: float) -> HighlightS
 
     if end - start > settings.max_clip_sec:
         end = start + settings.max_clip_sec
-    if end - start < settings.min_clip_sec:
-        end = min(duration_sec, start + settings.min_clip_sec)
     if end > duration_sec:
-        shift = end - duration_sec
-        start = max(0.0, start - shift)
         end = duration_sec
+    if end <= start:
+        end = min(duration_sec, start + settings.min_clip_sec)
 
     return segment.model_copy(update={"start_time": round(start, 2), "end_time": round(end, 2)})
 

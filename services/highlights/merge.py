@@ -10,8 +10,6 @@ def _clamp_duration(segment: HighlightSegment) -> HighlightSegment:
     duration = segment.end_time - segment.start_time
     if duration > settings.max_clip_sec:
         segment.end_time = segment.start_time + settings.max_clip_sec
-    if segment.end_time - segment.start_time < settings.min_clip_sec:
-        segment.end_time = segment.start_time + settings.min_clip_sec
     return segment
 
 
@@ -42,6 +40,7 @@ def normalize_segments(result: HighlightResult, duration_sec: float) -> Highligh
         recommended_clip_count=recommended,
         segments=cleaned,
         source=result.source,
+        video_theme=result.video_theme,
     )
 
 

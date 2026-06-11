@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 import structlog
 
 from config.settings import settings
+from services.highlights.schemas import VideoContext
 from services.video.validation import VideoValidationError
 
 logger = structlog.get_logger(__name__)
@@ -52,6 +54,29 @@ def _ytdlp_command() -> list[str]:
     return [sys.executable, "-m", "yt_dlp"]
 
 
+async def fetch_rutube_metadata(url: str) -> VideoContext:
+    args = [
+        *_ytdlp_command(),
+        "--no-playlist",
+        "--no-warnings",
+        "--print",
+        "%(title)s",
+        "--print",
+        "%(description)s",
+        url,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+    lines = stdout.decode("utf-8", errors="replace").strip().split("\n")
+    title = lines[0].strip() if lines else ""
+    description = lines[1].strip() if len(lines) > 1 else ""
+    return VideoContext(title=title, description=description)
+
+
 async def download_rutube_video(url: str, destination: Path) -> Path:
     if not settings.rutube_enabled:
         raise VideoValidationError("Загрузка с Rutube отключена.")
@@ -74,7 +99,7 @@ async def download_rutube_video(url: str, destination: Path) -> Path:
         "--match-filter",
         f"duration <= {max_duration}",
         "-f",
-        f"bv*[height<={height}]+ba/b[height<={height}]/best",
+        f"bv*[width>=height][height<={height}]+ba/bv*[height<={height}]+ba/b[height<={height}]/best",
         "--merge-output-format",
         "mp4",
         "-o",

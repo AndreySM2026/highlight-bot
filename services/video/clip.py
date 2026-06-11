@@ -7,9 +7,17 @@ import structlog
 from services.highlights.schemas import HighlightSegment
 from services.video.aspect import TARGET_HEIGHT, TARGET_WIDTH, build_vertical_916_filter
 from services.video.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
-from services.video.rotation import get_video_rotation, rotation_vf_prefix
+from services.video.rotation import rotation_vf_prefix
 
 logger = structlog.get_logger(__name__)
+
+
+def _geometry_from_dict(data: dict) -> tuple[bool, tuple[int, int, int, int] | None, int]:
+    is_landscape = bool(data.get("is_landscape", True))
+    letterbox_raw = data.get("letterbox")
+    letterbox = tuple(letterbox_raw) if letterbox_raw else None  # type: ignore[assignment]
+    rotation = int(data.get("rotation", 0))
+    return is_landscape, letterbox, rotation
 
 
 async def _assert_output_dimensions(path: Path) -> None:
@@ -34,17 +42,25 @@ async def render_clip(
     segment: HighlightSegment,
     output_path: Path,
     *,
-    content_crop: tuple[int, int, int, int] | None = None,
+    geometry: dict | None = None,
 ) -> Path:
-    rotation = await get_video_rotation(input_path)
+    is_landscape = True
+    letterbox = None
+    rotation = 0
+    if geometry:
+        is_landscape, letterbox, rotation = _geometry_from_dict(geometry)
+
     crop_filter = build_vertical_916_filter(
         rotation_prefix=rotation_vf_prefix(rotation),
-        content_crop=content_crop,
+        letterbox=letterbox,
+        is_landscape=is_landscape,
     )
     logger.info(
         "render_clip_start",
         input=str(input_path),
         rotation=rotation,
+        is_landscape=is_landscape,
+        letterbox=letterbox,
         start=segment.start_time,
         end=segment.end_time,
     )
