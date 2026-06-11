@@ -88,7 +88,12 @@ async def download_rutube_video(url: str, destination: Path) -> Path:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise VideoValidationError("Скачивание с Rutube заняло слишком много времени. Попробуйте позже.")
     output = (stderr or stdout or b"").decode("utf-8", errors="replace")
 
     if proc.returncode != 0:

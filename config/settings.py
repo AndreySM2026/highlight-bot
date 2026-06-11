@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     target_height: int = 1920
 
     activity_window_sec: int = Field(default=20, description="Размер окна карты активности")
+    analysis_max_height: int = Field(
+        default=720,
+        description="Макс. высота прокси-видео для анализа (не влияет на качество клипов)",
+    )
 
     @property
     def webhook_path(self) -> str:

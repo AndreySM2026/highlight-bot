@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -22,6 +23,38 @@ from services.video.validation import VideoValidationError, validate_video
 from bot.keyboards.clip_count import build_clip_count_keyboard
 
 logger = structlog.get_logger(__name__)
+
+
+async def _run_stage_with_heartbeat(
+    coro,
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    job_id: str,
+    stage: str,
+    label: str,
+    *,
+    ratio_start: float = 0.2,
+    ratio_end: float = 0.95,
+) -> None:
+    """Периодически обновляет прогресс, пока длится тяжёлый этап (ffmpeg)."""
+    task = asyncio.create_task(coro)
+    tick = 0
+    while not task.done():
+        _, pending = await asyncio.wait({task}, timeout=20)
+        if not pending:
+            tick += 1
+            ratio = ratio_start + (ratio_end - ratio_start) * min(0.95, tick * 0.08)
+            await _update_progress(
+                bot,
+                chat_id,
+                message_id,
+                job_id,
+                stage,
+                ratio,
+                f"{label} (ещё работаем…)",
+            )
+    await task
 
 
 async def _update_progress(
@@ -78,9 +111,17 @@ async def run_analysis_pipeline(
     await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 1.0, "Скачивание")
     duration = await validate_video(input_path, mime_type)
 
-    await _update_progress(bot, chat_id, progress_message_id, job_id, "normalizing", 0.3, "Нормализация")
+    await _update_progress(bot, chat_id, progress_message_id, job_id, "normalizing", 0.1, "Нормализация")
     normalized_path = job_dir / "normalized.mp4"
-    await normalize_video(input_path, normalized_path)
+    await _run_stage_with_heartbeat(
+        normalize_video(input_path, normalized_path),
+        bot,
+        chat_id,
+        progress_message_id,
+        job_id,
+        "normalizing",
+        "Нормализация",
+    )
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "normalizing", 1.0, "Нормализация")
 
@@ -138,9 +179,12 @@ async def run_render_pipeline(
     segments = highlights.segments[:clip_count]
     job_dir = Path(job["job_dir"])
     normalized_path = job_dir / "normalized.mp4"
+    source_path = job_dir / "input.mp4"
 
     if not normalized_path.exists():
         raise RuntimeError("Нормализованное видео не найдено.")
+    if not source_path.exists():
+        source_path = normalized_path
 
     await bot.edit_message_text(
         chat_id=chat_id,
@@ -163,7 +207,7 @@ async def run_render_pipeline(
             f"Рендер клипа {idx}/{total}",
         )
         output_path = job_dir / f"clip_{idx:03d}.mp4"
-        rendered = await render_clip(normalized_path, segment, output_path)
+        rendered = await render_clip(source_path, segment, output_path)
         rendered_paths.append(rendered)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "sending", 0.2, "Отправка")
