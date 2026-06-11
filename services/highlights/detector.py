@@ -4,7 +4,7 @@ import structlog
 
 from config.settings import settings
 from services.highlights.heuristic import detect_highlights_heuristic
-from services.highlights.merge import normalize_segments
+from services.highlights.merge import finalize_highlight_result
 from services.highlights.schemas import ActivityMap, HighlightResult, HighlightSegment
 from services.timeweb.client import TimewebClient
 from services.timeweb.exceptions import TimewebError
@@ -40,7 +40,7 @@ async def detect_highlights(activity_map: ActivityMap) -> HighlightResult:
         response = await client.call_agent(prompt)
         data = extract_json(response)
         result = _parse_highlight_response(data)
-        result = normalize_segments(result, activity_map.duration_sec)
+        result = finalize_highlight_result(result, activity_map)
         if result.segments:
             logger.info("highlights_detected", source="qwen", count=len(result.segments))
             return result

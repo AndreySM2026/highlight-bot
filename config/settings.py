@@ -103,6 +103,30 @@ class Settings(BaseSettings):
         default=720,
         description="Макс. высота прокси-видео для анализа (не влияет на качество клипов)",
     )
+    speech_align_lookback_sec: float = Field(
+        default=8.0,
+        description="Насколько назад искать паузу для начала клипа",
+    )
+    speech_align_lookahead_sec: float = Field(
+        default=5.0,
+        description="Насколько вперёд искать паузу для конца клипа",
+    )
+    speech_align_preroll_sec: float = Field(
+        default=0.2,
+        description="Небольшой отступ до начала речи после паузы",
+    )
+    speech_align_tail_sec: float = Field(
+        default=0.25,
+        description="Небольшой хвост после последнего слова до паузы",
+    )
+    speech_align_fallback_pad_sec: float = Field(
+        default=2.5,
+        description="Если пауза не найдена — расширить начало на столько секунд",
+    )
+    speech_align_fallback_tail_sec: float = Field(
+        default=1.5,
+        description="Если пауза не найдена — расширить конец на столько секунд",
+    )
 
     @property
     def webhook_path(self) -> str:

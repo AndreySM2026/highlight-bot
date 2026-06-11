@@ -15,16 +15,18 @@ def build_vertical_916_filter(
     rotation_prefix: str = "",
 ) -> str:
     """
-    Cover-crop в 9:16 без растягивания: масштаб по большей стороне, затем обрезка по центру.
+    Cover-crop в 9:16 без растягивания.
+    Сначала выравниваем SAR (Rutube/mp4 часто anamorphic), затем crop по центру.
     """
     w = width or settings.target_width
     h = height or settings.target_height
     return (
         f"{rotation_prefix}"
+        f"scale=iw*sar:ih,setsar=1,"
         f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={w}:{h}:(iw-{w})/2:(ih-{h})/2,"
-        f"setsar=1,"
-        f"setdar=9/16"
+        f"scale={w}:{h},"
+        f"setsar=1"
     )
 
 
@@ -37,12 +39,12 @@ async def render_clip(
     crop_filter = build_vertical_916_filter(rotation_prefix=rotation_vf_prefix(rotation))
     await run_ffmpeg(
         [
+            "-i",
+            str(input_path),
             "-ss",
             str(segment.start_time),
             "-to",
             str(segment.end_time),
-            "-i",
-            str(input_path),
             "-vf",
             crop_filter,
             "-c:v",
@@ -57,6 +59,8 @@ async def render_clip(
             "aac",
             "-b:a",
             "128k",
+            "-map_metadata",
+            "-1",
             str(output_path),
         ],
         label="render_clip",
@@ -74,7 +78,7 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
             "-i",
             str(path),
             "-vf",
-            "setsar=1",
+            "scale=iw*sar:ih,setsar=1",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -89,6 +93,8 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
             "96k",
             "-fs",
             str(max_bytes),
+            "-map_metadata",
+            "-1",
             str(compressed),
         ],
         label="compress_clip",

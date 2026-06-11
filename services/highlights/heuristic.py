@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from config.settings import settings
-from services.highlights.merge import normalize_segments
+from services.highlights.merge import finalize_highlight_result
 from services.highlights.schemas import ActivityMap, HighlightResult, HighlightSegment
 
 
@@ -52,4 +52,4 @@ def detect_highlights_heuristic(activity_map: ActivityMap) -> HighlightResult:
         segments=segments,
         source="heuristic",
     )
-    return normalize_segments(raw, activity_map.duration_sec)
+    return finalize_highlight_result(raw, activity_map)

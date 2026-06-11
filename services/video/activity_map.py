@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from config.settings import settings
-from services.highlights.schemas import ActivityMap, ActivityWindow
+from services.highlights.schemas import ActivityMap, ActivityWindow, SilentRange
 from services.video.ffmpeg import run_ffmpeg
 
 
@@ -62,7 +62,7 @@ async def build_activity_map(video_path: Path, duration_sec: float) -> ActivityM
             "-i",
             str(audio_path),
             "-af",
-            "silencedetect=noise=-30dB:d=0.5",
+            "silencedetect=noise=-32dB:d=0.35",
             "-f",
             "null",
             "-",
@@ -119,4 +119,10 @@ async def build_activity_map(video_path: Path, duration_sec: float) -> ActivityM
     if audio_path.exists():
         audio_path.unlink()
 
-    return ActivityMap(duration_sec=duration_sec, windows=windows)
+    return ActivityMap(
+        duration_sec=duration_sec,
+        windows=windows,
+        silent_ranges=[
+            SilentRange(start=round(s, 2), end=round(e, 2)) for s, e in silent_ranges
+        ],
+    )

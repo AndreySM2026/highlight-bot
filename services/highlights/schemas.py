@@ -12,9 +12,15 @@ class ActivityWindow(BaseModel):
     is_silent: bool = False
 
 
+class SilentRange(BaseModel):
+    start: float
+    end: float
+
+
 class ActivityMap(BaseModel):
     duration_sec: float
     windows: list[ActivityWindow]
+    silent_ranges: list[SilentRange] = Field(default_factory=list)
 
 
 class HighlightSegment(BaseModel):
