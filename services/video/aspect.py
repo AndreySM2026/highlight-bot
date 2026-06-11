@@ -49,15 +49,14 @@ def build_vertical_916_filter(
     if content_crop:
         cw, ch, cx, cy = content_crop
         crop_prefix = f"crop={cw}:{ch}:{cx}:{cy},"
+    # Фиксированный crop 1080×1920 — динамические w/h/x/y ломаются в ffmpeg (Eval: 'w'/2).
     return (
         f"{rotation_prefix}"
         f"{crop_prefix}"
         "scale=iw*sar:ih:flags=lanczos,"
         "setsar=1,"
-        "crop=w='if(gt(iw/ih,9/16),ih*9/16,iw)':"
-        "h='if(gt(iw/ih,9/16),ih,iw*16/9)':"
-        "x='(iw-w)/2':"
-        "y='(ih-h)/2',"
+        f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={w}:{h}:(iw-{w})/2:(ih-{h})/2,"
         f"scale={w}:{h}:flags=lanczos:force_original_aspect_ratio=disable,"
         "setsar=1"
     )
