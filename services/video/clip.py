@@ -7,17 +7,8 @@ import structlog
 from services.highlights.schemas import HighlightSegment
 from services.video.aspect import TARGET_HEIGHT, TARGET_WIDTH, build_vertical_916_filter
 from services.video.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
-from services.video.rotation import rotation_vf_prefix
 
 logger = structlog.get_logger(__name__)
-
-
-def _geometry_from_dict(data: dict) -> tuple[bool, tuple[int, int, int, int] | None, int]:
-    is_landscape = bool(data.get("is_landscape", True))
-    letterbox_raw = data.get("letterbox")
-    letterbox = tuple(letterbox_raw) if letterbox_raw else None  # type: ignore[assignment]
-    rotation = int(data.get("rotation", 0))
-    return is_landscape, letterbox, rotation
 
 
 async def _assert_output_dimensions(path: Path) -> None:
@@ -44,29 +35,16 @@ async def render_clip(
     *,
     geometry: dict | None = None,
 ) -> Path:
-    is_landscape = True
-    letterbox = None
-    rotation = 0
-    if geometry:
-        is_landscape, letterbox, rotation = _geometry_from_dict(geometry)
-
-    crop_filter = build_vertical_916_filter(
-        rotation_prefix=rotation_vf_prefix(rotation),
-        letterbox=letterbox,
-        is_landscape=is_landscape,
-    )
+    crop_filter = build_vertical_916_filter()
     logger.info(
         "render_clip_start",
         input=str(input_path),
-        rotation=rotation,
-        is_landscape=is_landscape,
-        letterbox=letterbox,
+        filter=crop_filter,
         start=segment.start_time,
         end=segment.end_time,
     )
     await run_ffmpeg(
         [
-            "-noautorotate",
             "-i",
             str(input_path),
             "-ss",
@@ -108,11 +86,8 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
     compressed = path.with_name(f"{path.stem}_compressed{path.suffix}")
     await run_ffmpeg(
         [
-            "-noautorotate",
             "-i",
             str(path),
-            "-vf",
-            f"scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=disable,setsar=1",
             "-c:v",
             "libx264",
             "-profile:v",

@@ -206,14 +206,6 @@ async def run_render_pipeline(
     if not source_path.exists():
         source_path = normalized_path
 
-    geometry: dict | None = None
-    geometry_file = job_dir / "geometry.json"
-    if geometry_file.exists():
-        try:
-            geometry = json.loads(geometry_file.read_text(encoding="utf-8"))
-        except Exception:
-            geometry = None
-
     await bot.edit_message_text(
         chat_id=chat_id,
         message_id=progress_message_id,
@@ -235,12 +227,7 @@ async def run_render_pipeline(
             f"Рендер клипа {idx}/{total}",
         )
         output_path = job_dir / f"clip_{idx:03d}.mp4"
-        rendered = await render_clip(
-            source_path,
-            segment,
-            output_path,
-            geometry=geometry,
-        )
+        rendered = await render_clip(source_path, segment, output_path)
         rendered_paths.append(rendered)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "sending", 0.2, "Отправка")
