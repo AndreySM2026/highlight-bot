@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import shutil
 import sys
@@ -99,7 +98,7 @@ async def download_rutube_video(url: str, destination: Path) -> Path:
         "--match-filter",
         f"duration <= {max_duration}",
         "-f",
-        f"bv*[width>=height][height<={height}]+ba/bv*[height<={height}]+ba/b[height<={height}]/best",
+        f"bv*[height<={height}]+ba/b[height<={height}]/best",
         "--merge-output-format",
         "mp4",
         "-o",
@@ -147,4 +146,6 @@ def _map_ytdlp_error(output: str) -> str:
         return f"Видео слишком большое (лимит {limit_mb:.0f} МБ)."
     if "duration" in lower:
         return f"Видео длиннее {settings.max_video_duration_sec // 60} минут."
+    if "format" in lower or "filter specification" in lower:
+        return "Не удалось выбрать формат видео на Rutube. Попробуйте позже."
     return "Не удалось скачать видео с Rutube. Проверьте ссылку и доступность ролика."
