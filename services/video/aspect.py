@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import structlog
@@ -11,40 +12,103 @@ logger = structlog.get_logger(__name__)
 
 TARGET_WIDTH = 1080
 TARGET_HEIGHT = 1920
+TARGET_ASPECT = TARGET_WIDTH / TARGET_HEIGHT
+
+
+def parse_sar(raw: str | None) -> float:
+    if not raw or raw in {"0:0", "N/A", "unknown", "1:1", "1/1"}:
+        return 1.0
+    if "/" in raw:
+        num, den = raw.split("/", 1)
+    elif ":" in raw:
+        num, den = raw.split(":", 1)
+    else:
+        return 1.0
+    denominator = float(den)
+    return float(num) / denominator if denominator else 1.0
+
+
+@dataclass(frozen=True)
+class DisplayGeometry:
+    """Размер кадра после autorotate ffmpeg (как в -vf)."""
+
+    coded_width: int
+    coded_height: int
+    display_width: float
+    display_height: float
+    sar: float
+    rotation: int
+
+    @property
+    def aspect(self) -> float:
+        if self.display_height <= 0:
+            return 0.0
+        return self.display_width / self.display_height
+
+    def is_exact_target(self) -> bool:
+        """Уже 1080×1920 в файле — можно нарезать без scale/crop."""
+        if self.rotation != 0:
+            return False
+        if self.coded_width != TARGET_WIDTH or self.coded_height != TARGET_HEIGHT:
+            return False
+        return abs(self.sar - 1.0) < 0.01
 
 
 def build_vertical_916_filter() -> str:
     """
     Instagram Stories / Reels: 1080×1920, cover-crop 9:16 без растягивания.
 
-    1. Выравниваем пиксели (SAR → 1)
-    2. Масштаб «cover» — заполняет 9:16, лишнее обрежется
-    3. Центральный crop ровно 1080×1920
-
-    Поворот из метаданных (iPhone) ffmpeg применяет автоматически — без transpose.
+    Только scale-to-fill + центральный crop. Без force_original_aspect_ratio=disable
+    и без scale=iw*sar (ffmpeg учитывает SAR при autorotate).
     """
     w, h = TARGET_WIDTH, TARGET_HEIGHT
     return (
-        "scale=iw*sar:ih,setsar=1,"
         f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={w}:{h},"
+        f"crop={w}:{h}:(iw-{w})/2:(ih-{h})/2,"
         "setsar=1"
     )
 
 
-async def analyze_video_geometry(input_path: Path) -> dict:
-    """Диагностика кадра для логов (не влияет на рендер)."""
+async def get_display_geometry(input_path: Path) -> DisplayGeometry:
     rotation = await get_video_rotation(input_path)
     probe = await run_ffprobe(input_path)
     stream = next(
         (s for s in probe.get("streams", []) if s.get("codec_type") == "video"),
         {},
     )
+    coded_w = int(stream.get("width", 0))
+    coded_h = int(stream.get("height", 0))
+    sar = parse_sar(stream.get("sample_aspect_ratio"))
+
+    if rotation in {90, 270}:
+        display_w = coded_h * sar
+        display_h = coded_w
+    else:
+        display_w = coded_w * sar
+        display_h = coded_h
+
+    return DisplayGeometry(
+        coded_width=coded_w,
+        coded_height=coded_h,
+        display_width=display_w,
+        display_height=display_h,
+        sar=sar,
+        rotation=rotation,
+    )
+
+
+async def analyze_video_geometry(input_path: Path) -> dict:
+    """Диагностика кадра для логов (не влияет на рендер)."""
+    geom = await get_display_geometry(input_path)
     geometry = {
-        "rotation": rotation,
-        "width": int(stream.get("width", 0)),
-        "height": int(stream.get("height", 0)),
-        "sar": stream.get("sample_aspect_ratio", "1:1"),
+        "rotation": geom.rotation,
+        "width": geom.coded_width,
+        "height": geom.coded_height,
+        "display_width": round(geom.display_width, 1),
+        "display_height": round(geom.display_height, 1),
+        "aspect": round(geom.aspect, 4),
+        "sar": geom.sar,
+        "is_exact_target": geom.is_exact_target(),
     }
     logger.info("video_geometry", path=str(input_path), **geometry)
     return geometry

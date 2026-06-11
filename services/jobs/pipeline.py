@@ -243,6 +243,8 @@ async def run_render_pipeline(
             chat_id=chat_id,
             video=FSInputFile(clip_path),
             caption=caption,
+            width=1080,
+            height=1920,
             supports_streaming=True,
         )
 
