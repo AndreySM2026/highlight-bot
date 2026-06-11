@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from config.settings import settings
-from services.highlights.align import align_segments_to_speech
-from services.highlights.coherence import split_multi_thought_segments
 from services.highlights.schemas import ActivityMap, HighlightResult, HighlightSegment
+from services.highlights.snap import snap_all_segments_to_blocks
+from services.highlights.speech_blocks import build_speech_blocks
 
 
 def _clamp_duration(segment: HighlightSegment) -> HighlightSegment:
@@ -33,6 +33,8 @@ def normalize_segments(result: HighlightResult, duration_sec: float) -> Highligh
         if len(cleaned) >= settings.max_clips:
             break
 
+    cleaned.sort(key=lambda s: s.start_time)
+
     recommended = min(max(result.recommended_clip_count, 1), len(cleaned) or 1)
     recommended = min(recommended, settings.max_clips)
 
@@ -45,8 +47,6 @@ def normalize_segments(result: HighlightResult, duration_sec: float) -> Highligh
 
 
 def finalize_highlight_result(result: HighlightResult, activity_map: ActivityMap) -> HighlightResult:
-    result = normalize_segments(result, activity_map.duration_sec)
-    result = align_segments_to_speech(result, activity_map)
-    result = split_multi_thought_segments(result, activity_map)
-    result = normalize_segments(result, activity_map.duration_sec)
-    return align_segments_to_speech(result, activity_map)
+    blocks = build_speech_blocks(activity_map)
+    result = snap_all_segments_to_blocks(result, blocks)
+    return normalize_segments(result, activity_map.duration_sec)

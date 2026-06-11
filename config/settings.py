@@ -103,6 +103,14 @@ class Settings(BaseSettings):
         default=720,
         description="Макс. высота прокси-видео для анализа (не влияет на качество клипов)",
     )
+    speech_min_pause_sec: float = Field(
+        default=0.45,
+        description="Мин. длина паузы для разделения речевых блоков",
+    )
+    speech_min_block_sec: float = Field(
+        default=2.0,
+        description="Мин. длина блока речи",
+    )
     speech_align_lookback_sec: float = Field(
         default=8.0,
         description="Насколько назад искать паузу для начала клипа",

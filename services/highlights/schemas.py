@@ -17,6 +17,15 @@ class SilentRange(BaseModel):
     end: float
 
 
+class SpeechBlock(BaseModel):
+    """Непрерывный фрагмент речи между паузами — естественная граница мысли."""
+
+    id: int
+    start: float
+    end: float
+    duration: float
+
+
 class ActivityMap(BaseModel):
     duration_sec: float
     windows: list[ActivityWindow]

@@ -5,7 +5,7 @@ import structlog
 from services.highlights.heuristic import detect_highlights_heuristic
 from services.highlights.merge import finalize_highlight_result
 from services.highlights.schemas import ActivityMap, HighlightResult, HighlightSegment, VideoContext
-from services.highlights.speech_blocks import detect_from_speech_blocks
+from services.highlights.speech_blocks import build_speech_blocks, detect_from_speech_blocks, segment_from_blocks
 from services.timeweb.client import TimewebClient
 from services.timeweb.exceptions import TimewebError
 from services.timeweb.json_parser import extract_json
@@ -14,17 +14,45 @@ from services.timeweb.prompts.highlight_detection import build_highlight_prompt
 logger = structlog.get_logger(__name__)
 
 
-def _parse_highlight_response(data: dict) -> HighlightResult:
-    segments = [
-        HighlightSegment(
-            start_time=float(item["start_time"]),
-            end_time=float(item["end_time"]),
-            score=float(item.get("score", 0.5)),
-            title=str(item.get("title", "Хайлайт")),
-            reason=str(item.get("reason", "")),
-        )
-        for item in data.get("segments", [])
-    ]
+def _parse_highlight_response(data: dict, activity_map: ActivityMap) -> HighlightResult:
+    blocks = build_speech_blocks(activity_map)
+    blocks_by_id = {b.id: b for b in blocks}
+    segments: list[HighlightSegment] = []
+
+    for item in data.get("segments", []):
+        title = str(item.get("title", "Хайлайт"))
+        reason = str(item.get("reason", ""))
+        score = float(item.get("score", 0.5))
+
+        block_ids = item.get("block_ids")
+        if block_ids is not None:
+            chosen = []
+            for raw_id in block_ids:
+                bid = int(raw_id)
+                if bid in blocks_by_id:
+                    chosen.append(blocks_by_id[bid])
+            chosen.sort(key=lambda b: b.id)
+            if len(chosen) >= 2:
+                for a, b in zip(chosen, chosen[1:]):
+                    if b.id != a.id + 1 or b.start - a.end > 1.5:
+                        chosen = [chosen[0]]
+                        break
+            seg = segment_from_blocks(chosen, title=title, reason=reason, score=score)
+            if seg:
+                segments.append(seg)
+            continue
+
+        if "start_time" in item and "end_time" in item:
+            segments.append(
+                HighlightSegment(
+                    start_time=float(item["start_time"]),
+                    end_time=float(item["end_time"]),
+                    score=score,
+                    title=title,
+                    reason=reason,
+                )
+            )
+
     return HighlightResult(
         recommended_clip_count=int(data.get("recommended_clip_count", max(1, len(segments) // 2))),
         segments=segments,
@@ -43,7 +71,7 @@ async def detect_highlights(
     try:
         response = await client.call_agent(prompt)
         data = extract_json(response)
-        result = _parse_highlight_response(data)
+        result = _parse_highlight_response(data, activity_map)
         result = finalize_highlight_result(result, activity_map)
         if result.segments:
             logger.info(

@@ -62,7 +62,7 @@ async def build_activity_map(video_path: Path, duration_sec: float) -> ActivityM
             "-i",
             str(audio_path),
             "-af",
-            "silencedetect=noise=-32dB:d=0.35",
+            "silencedetect=noise=-35dB:d=0.5",
             "-f",
             "null",
             "-",

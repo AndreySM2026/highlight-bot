@@ -196,7 +196,8 @@ async def run_render_pipeline(
         raise RuntimeError("Результаты анализа не найдены.")
 
     highlights = HighlightResult.model_validate(highlights_data)
-    segments = highlights.segments[:clip_count]
+    selected = highlights.segments[:clip_count]
+    segments = sorted(selected, key=lambda s: s.start_time)
     job_dir = Path(job["job_dir"])
     normalized_path = job_dir / "normalized.mp4"
     source_path = job_dir / "input.mp4"

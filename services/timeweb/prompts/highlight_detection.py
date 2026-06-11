@@ -4,55 +4,61 @@ import json
 
 from config.settings import settings
 from services.highlights.schemas import ActivityMap, VideoContext
+from services.highlights.speech_blocks import build_speech_blocks
 
 
 def build_highlight_prompt(activity_map: ActivityMap, context: VideoContext | None = None) -> str:
-    payload = activity_map.model_dump()
+    blocks = build_speech_blocks(activity_map)
+    blocks_payload = [b.model_dump() for b in blocks]
+
     context_block = ""
     if context and (context.title or context.description):
         context_block = f"""
-Контекст видео (название и описание с Rutube):
+Контекст видео:
 Название: {context.title}
 Описание: {context.description[:1500]}
 """
 
     return f"""Ты монтажёр коротких вертикальных клипов (Reels/Shorts) для русскоязычного видео.
 {context_block}
-ЗАДАЧА:
+КРИТИЧЕСКИ ВАЖНО — как нарезать:
+- Нарезка ТОЛЬКО по speech_blocks (готовые фрагменты речи между паузами).
+- Каждый клип = один block_id ИЛИ несколько СОСЕДНИХ block_id (если одна мысль длиннее одного блока).
+- ЗАПРЕЩЕНО придумывать произвольные start_time/end_time — только целые блоки.
+- Клип всегда начинается с НАЧАЛА реплики (start блока) и заканчивается на КОНЦЕ мысли (end блока).
+- Одна идея = один клип. Не склеивай несмежные block_id.
 
-1. Определи главную тему видео (video_theme).
-2. Найди отдельные ЗАКОНЧЕННЫЕ идеи/тезисы — каждая должна быть понятна без просмотра всего ролика.
-3. На каждую идею — ровно ОДИН клип. Нельзя склеивать две разные мысли.
-4. title — короткий заголовок сути (как заголовок поста, до 60 символов).
-5. reason — в 1–2 предложениях: какую мысль зритель поймёт из этого клипа.
+Задача:
+1. video_theme — главная тема видео (1–2 предложения).
+2. Выбери лучшие блоки с законченными мыслями (тезис понятен с первой секунды).
+3. title — заголовок сути (до 60 символов).
+4. reason — что зритель поймёт, если посмотрит только этот клип (1–2 предложения).
+5. Длительность определяется блоками ({settings.min_clip_sec}–{settings.max_clip_sec} сек).
 
-Границы по времени:
-- start_time — сразу после паузы (silence_end), где начинается эта идея.
-- end_time — на паузе (silence_start), когда идея закончена.
-- Длительность ЛЮБАЯ, по смыслу: от {settings.min_clip_sec} до {settings.max_clip_sec} секунд.
-- Не растягивай клип до минуты, если мысль уложилась в 20–30 секунд.
-- Не обрезай, если мысль ещё не раскрыта.
-
-recommended_clip_count = число лучших самостоятельных идей (1–10).
+recommended_clip_count = число лучших идей (1–10).
 
 Ответь ТОЛЬКО валидным JSON без markdown.
 
 Формат:
 {{
   "video_theme": "Главная тема",
-  "ideas": [{{"title": "...", "summary": "..."}}],
   "recommended_clip_count": 3,
   "segments": [
     {{
-      "start_time": 12.0,
-      "end_time": 38.0,
+      "block_ids": [2],
       "score": 0.91,
       "title": "Заголовок идеи",
       "reason": "Зритель поймёт: ..."
+    }},
+    {{
+      "block_ids": [5, 6],
+      "score": 0.85,
+      "title": "Другая идея",
+      "reason": "..."
     }}
   ]
 }}
 
-Карта активности (silent_ranges — паузы в речи, windows — активность по 20 сек):
-{json.dumps(payload, ensure_ascii=False, indent=2)}
+speech_blocks (id, start, end, duration — секунды речи между паузами):
+{json.dumps(blocks_payload, ensure_ascii=False, indent=2)}
 """
