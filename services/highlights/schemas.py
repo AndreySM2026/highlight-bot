@@ -24,12 +24,20 @@ class SpeechBlock(BaseModel):
     start: float
     end: float
     duration: float
+    text: str = ""
+
+
+class TranscriptSegment(BaseModel):
+    start: float
+    end: float
+    text: str
 
 
 class ActivityMap(BaseModel):
     duration_sec: float
     windows: list[ActivityWindow]
     silent_ranges: list[SilentRange] = Field(default_factory=list)
+    transcript_segments: list[TranscriptSegment] = Field(default_factory=list)
 
 
 class VideoContext(BaseModel):

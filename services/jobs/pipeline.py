@@ -20,10 +20,20 @@ from services.video.clip import render_clip
 from services.video.download import download_telegram_file
 from services.video.normalize import normalize_video
 from services.video.rutube import download_rutube_video, fetch_rutube_metadata
+from services.video.transcribe import transcribe_audio
 from services.video.validation import VideoValidationError, validate_video
 from bot.keyboards.clip_count import build_clip_count_keyboard
 
 logger = structlog.get_logger(__name__)
+
+
+def _source_label(source: str) -> str:
+    labels = {
+        "qwen": "ИИ",
+        "speech_blocks": "речевые блоки",
+        "heuristic": "эвристика",
+    }
+    return labels.get(source, source)
 
 
 async def _run_stage_with_heartbeat(
@@ -37,8 +47,8 @@ async def _run_stage_with_heartbeat(
     *,
     ratio_start: float = 0.2,
     ratio_end: float = 0.95,
-) -> None:
-    """Периодически обновляет прогресс, пока длится тяжёлый этап (ffmpeg)."""
+):
+    """Периодически обновляет прогресс, пока длится тяжёлый этап (ffmpeg, Whisper)."""
     task = asyncio.create_task(coro)
     tick = 0
     while not task.done():
@@ -55,7 +65,7 @@ async def _run_stage_with_heartbeat(
                 ratio,
                 f"{label} (ещё работаем…)",
             )
-    await task
+    return await task
 
 
 async def _update_progress(
@@ -142,8 +152,37 @@ async def run_analysis_pipeline(
     await _update_progress(bot, chat_id, progress_message_id, job_id, "normalizing", 1.0, "Нормализация")
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "metadata", 0.4, "Анализ метаданных")
-    activity_map = await build_activity_map(normalized_path, duration)
+    activity_map, audio_path = await build_activity_map(normalized_path, duration)
     await _update_progress(bot, chat_id, progress_message_id, job_id, "metadata", 1.0, "Анализ метаданных")
+
+    if settings.whisper_enabled:
+        await _update_progress(
+            bot, chat_id, progress_message_id, job_id, "transcribing", 0.2, "Расшифровка речи"
+        )
+        try:
+            transcript = await _run_stage_with_heartbeat(
+                transcribe_audio(audio_path, duration_sec=duration),
+                bot,
+                chat_id,
+                progress_message_id,
+                job_id,
+                "transcribing",
+                "Расшифровка речи",
+            )
+            activity_map.transcript_segments = transcript
+            (job_dir / "transcript.json").write_text(
+                json.dumps([s.model_dump() for s in activity_map.transcript_segments], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("whisper_failed", error=str(exc))
+        finally:
+            audio_path.unlink(missing_ok=True)
+        await _update_progress(
+            bot, chat_id, progress_message_id, job_id, "transcribing", 1.0, "Расшифровка речи"
+        )
+    elif audio_path.exists():
+        audio_path.unlink(missing_ok=True)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "analyzing", 0.5, "Поиск хайлайтов")
     highlights: HighlightResult = await detect_highlights(activity_map, video_context)
@@ -156,7 +195,10 @@ async def run_analysis_pipeline(
 
     total_found = len(highlights.segments)
     recommended = highlights.recommended_clip_count
-    source_label = "Qwen 3.5" if highlights.source == "qwen" else "эвристика"
+    source_label = _source_label(highlights.source)
+    transcript_note = ""
+    if activity_map.transcript_segments:
+        transcript_note = f"🎙 Расшифровано фрагментов: {len(activity_map.transcript_segments)}\n\n"
     theme_line = ""
     if highlights.video_theme:
         theme_line = f"📌 Тема: _{highlights.video_theme}_\n\n"
@@ -166,6 +208,7 @@ async def run_analysis_pipeline(
         message_id=progress_message_id,
         text=(
             f"✅ Анализ завершён ({source_label}).\n\n"
+            f"{transcript_note}"
             f"{theme_line}"
             f"Нашёл *{total_found}* законченных идей.\n"
             f"Рекомендую сделать *{recommended}* клипов.\n\n"

@@ -5,3 +5,4 @@ aiosqlite>=0.20,<1.0
 pydantic>=2.9,<3.0
 pydantic-settings>=2.5,<3.0
 structlog>=24.4,<25.0
+faster-whisper>=1.1.0,<2.0

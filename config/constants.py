@@ -3,8 +3,9 @@ from __future__ import annotations
 PROGRESS_STAGES = {
     "downloading": (0, 10),
     "normalizing": (10, 25),
-    "metadata": (25, 45),
-    "analyzing": (45, 70),
+    "metadata": (25, 40),
+    "transcribing": (40, 55),
+    "analyzing": (55, 70),
     "waiting_choice": (70, 70),
     "rendering": (70, 95),
     "sending": (95, 100),

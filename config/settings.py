@@ -103,6 +103,32 @@ class Settings(BaseSettings):
         default=720,
         description="Макс. высота прокси-видео для анализа (не влияет на качество клипов)",
     )
+    whisper_enabled: bool = Field(
+        default=True,
+        description="Распознавание речи Whisper перед выбором хайлайтов",
+    )
+    whisper_model: str = Field(
+        default="small",
+        description="Модель faster-whisper: tiny, base, small, medium",
+    )
+    whisper_language: str = Field(
+        default="ru",
+        description="Язык распознавания (ISO 639-1), пусто — авто",
+    )
+    whisper_device: str = Field(default="cpu", description="cpu или cuda")
+    whisper_compute_type: str = Field(
+        default="int8",
+        description="Тип вычислений CPU: int8, float32; для GPU: float16",
+    )
+
+    @field_validator("whisper_enabled", mode="before")
+    @classmethod
+    def parse_whisper_enabled(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None or value == "":
+            return True
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
     speech_min_pause_sec: float = Field(
         default=0.45,
         description="Мин. длина паузы для разделения речевых блоков",

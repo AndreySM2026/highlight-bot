@@ -5,6 +5,7 @@ from pathlib import Path
 
 from config.settings import settings
 from services.highlights.schemas import ActivityMap, ActivityWindow, SilentRange
+from services.video.audio import extract_audio
 from services.video.ffmpeg import run_ffmpeg
 
 
@@ -41,21 +42,16 @@ def _speech_ratio_for_window(start: float, end: float, silent_ranges: list[tuple
     return max(0.0, min(1.0, 1.0 - silent / window_len))
 
 
-async def build_activity_map(video_path: Path, duration_sec: float) -> ActivityMap:
-    audio_path = video_path.with_suffix(".wav")
-    await run_ffmpeg(
-        [
-            "-i",
-            str(video_path),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            str(audio_path),
-        ],
-        label="extract_audio",
-    )
+async def build_activity_map(
+    video_path: Path,
+    duration_sec: float,
+    *,
+    audio_path: Path | None = None,
+) -> tuple[ActivityMap, Path]:
+    """Карта активности + путь к WAV (удалить после Whisper)."""
+    owned_audio = audio_path is None
+    if audio_path is None:
+        audio_path = await extract_audio(video_path)
 
     silence_out = await run_ffmpeg(
         [
@@ -116,13 +112,13 @@ async def build_activity_map(video_path: Path, duration_sec: float) -> ActivityM
         )
         start += window_size
 
-    if audio_path.exists():
-        audio_path.unlink()
-
-    return ActivityMap(
+    activity_map = ActivityMap(
         duration_sec=duration_sec,
         windows=windows,
         silent_ranges=[
             SilentRange(start=round(s, 2), end=round(e, 2)) for s, e in silent_ranges
         ],
     )
+    if owned_audio and not settings.whisper_enabled and audio_path.exists():
+        audio_path.unlink()
+    return activity_map, audio_path
