@@ -5,19 +5,18 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from bot.states.processing import ProcessingStates
-from config.settings import settings
 from services.jobs.manager import start_analysis_job
 from services.jobs.progress import progress_message
 from services.jobs.quota import check_daily_quota
 from services.storage.database import Database
-from services.video.rutube import extract_rutube_url
+from services.video.remote import disabled_platform_hint, parse_video_link
 
 router = Router()
 
 
 @router.message(F.text)
-async def handle_rutube_link(message: Message, state: FSMContext) -> None:
-    """Принимает ссылку Rutube без обязательного /start (FSM сбрасывается после рестарта)."""
+async def handle_video_link(message: Message, state: FSMContext) -> None:
+    """Принимает ссылку Rutube или VK (без обязательного /start)."""
     if not message.from_user or not message.text:
         return
 
@@ -25,40 +24,49 @@ async def handle_rutube_link(message: Message, state: FSMContext) -> None:
     if text.startswith("/"):
         return
 
-    url = extract_rutube_url(text)
-    if not url:
+    disabled = disabled_platform_hint(text)
+    if disabled:
+        await message.answer(disabled)
+        return
+
+    link = parse_video_link(text)
+    if not link:
         current = await state.get_state()
         if current == ProcessingStates.waiting_video.state:
             await message.answer(
-                "Отправьте видеофайл (до 20 МБ) или ссылку Rutube:\n"
-                "https://rutube.ru/video/..."
+                "Отправьте видеофайл (до 20 МБ) или ссылку:\n"
+                "• Rutube: https://rutube.ru/video/...\n"
+                "• VK: https://vk.com/video-..."
             )
         return
 
-    print(f"Rutube link from user {message.from_user.id}: {url}", flush=True)
-
-    if not settings.rutube_enabled:
-        await message.answer("Загрузка по ссылке Rutube временно отключена.")
-        return
+    print(f"{link.label} link from user {message.from_user.id}: {link.url}", flush=True)
 
     quota_error = await check_daily_quota(message.from_user.id)
     if quota_error:
         await message.answer(quota_error)
         return
 
-    await message.answer(f"✅ Принял ссылку Rutube.\nНачинаю скачивание…")
+    db = Database()
+    if await db.has_active_job(message.from_user.id):
+        await message.answer(
+            "У вас уже идёт обработка видео.\n"
+            "Подождите завершения или отправьте /cancel для отмены."
+        )
+        return
+
+    await message.answer(f"✅ Принял ссылку {link.label}.\nНачинаю скачивание…")
 
     progress_msg = await message.answer(
-        progress_message(0, "Скачивание с Rutube (может занять несколько минут)")
+        progress_message(0, f"Скачивание с {link.label} (может занять несколько минут)")
     )
 
-    db = Database()
     try:
         await start_analysis_job(
             message.bot,
             user_id=message.from_user.id,
             chat_id=message.chat.id,
-            rutube_url=url,
+            video_link=link,
             progress_message_id=progress_msg.message_id,
         )
         await db.increment_daily_usage(message.from_user.id)

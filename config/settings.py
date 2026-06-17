@@ -73,6 +73,15 @@ class Settings(BaseSettings):
             return True
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
+    @field_validator("vk_enabled", mode="before")
+    @classmethod
+    def parse_vk_enabled(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None or value == "":
+            return True
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
     database_path: Path = Path("data/bot.db")
     temp_dir: Path = Path("data/temp")
 
@@ -82,13 +91,14 @@ class Settings(BaseSettings):
         description="Макс. размер файла для скачивания через Bot API (20 МБ)",
     )
     rutube_enabled: bool = True
+    vk_enabled: bool = True
     max_rutube_download_bytes: int = Field(
         default=1024 * 1024 * 1024,
-        description="Макс. размер скачивания с Rutube (1 ГБ)",
+        description="Макс. размер скачивания по ссылке Rutube/VK (1 ГБ)",
     )
     rutube_max_height: int = Field(
         default=1080,
-        description="Макс. высота видео при скачивании с Rutube",
+        description="Макс. высота видео при скачивании по ссылке Rutube/VK",
     )
     max_clips: int = 10
     max_videos_per_day: int = 10
@@ -182,6 +192,14 @@ class Settings(BaseSettings):
     def full_webhook_url(self) -> str:
         base = self.webhook_url.rstrip("/")
         return f"{base}{self.webhook_path}"
+
+    @property
+    def max_remote_download_bytes(self) -> int:
+        return self.max_rutube_download_bytes
+
+    @property
+    def remote_max_height(self) -> int:
+        return self.rutube_max_height
 
 
 settings = Settings()

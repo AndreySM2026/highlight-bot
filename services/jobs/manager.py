@@ -10,6 +10,7 @@ from aiogram import Bot
 from config.settings import settings
 from services.jobs.pipeline import run_analysis_pipeline, run_render_pipeline
 from services.storage.database import Database
+from services.video.remote import RemoteVideoLink
 from services.video.validation import VideoValidationError
 
 logger = structlog.get_logger(__name__)
@@ -69,11 +70,11 @@ async def start_analysis_job(
     chat_id: int,
     progress_message_id: int,
     file_id: str | None = None,
-    rutube_url: str | None = None,
+    video_link: RemoteVideoLink | None = None,
     mime_type: str | None = None,
 ) -> str:
-    if bool(file_id) == bool(rutube_url):
-        raise ValueError("Укажите file_id или rutube_url")
+    if bool(file_id) == bool(video_link):
+        raise ValueError("Укажите file_id или video_link")
 
     db = Database()
     if await db.has_active_job(user_id):
@@ -97,7 +98,7 @@ async def start_analysis_job(
             chat_id,
             job_dir,
             file_id=file_id,
-            rutube_url=rutube_url,
+            video_link=video_link,
             mime_type=mime_type,
         )
     )
@@ -138,7 +139,7 @@ async def _run_analysis_wrapper(
     job_dir: Path,
     *,
     file_id: str | None = None,
-    rutube_url: str | None = None,
+    video_link: RemoteVideoLink | None = None,
     mime_type: str | None = None,
 ) -> None:
     db = Database()
@@ -151,7 +152,7 @@ async def _run_analysis_wrapper(
             chat_id=chat_id,
             job_dir=job_dir,
             file_id=file_id,
-            rutube_url=rutube_url,
+            video_link=video_link,
             mime_type=mime_type,
         )
     except asyncio.CancelledError:

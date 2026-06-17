@@ -19,7 +19,8 @@ from services.video.aspect import analyze_video_geometry
 from services.video.clip import render_clip
 from services.video.download import download_telegram_file
 from services.video.normalize import normalize_video
-from services.video.rutube import download_rutube_video, fetch_rutube_metadata
+from services.video.remote import RemoteVideoLink
+from services.video.ytdlp_common import download_remote_video, fetch_remote_metadata
 from services.video.transcribe import release_whisper_model, transcribe_audio
 from services.video.validation import VideoValidationError, validate_video
 from bot.keyboards.clip_count import build_clip_count_keyboard
@@ -98,11 +99,11 @@ async def run_analysis_pipeline(
     chat_id: int,
     job_dir: Path,
     file_id: str | None = None,
-    rutube_url: str | None = None,
+    video_link: RemoteVideoLink | None = None,
     mime_type: str | None = None,
 ) -> None:
-    if bool(file_id) == bool(rutube_url):
-        raise ValueError("Укажите file_id или rutube_url")
+    if bool(file_id) == bool(video_link):
+        raise ValueError("Укажите file_id или video_link")
 
     db = Database()
     job = await db.get_job(job_id)
@@ -112,19 +113,19 @@ async def run_analysis_pipeline(
     progress_message_id = job["progress_message_id"]
 
     video_context = VideoContext()
-    download_label = "Скачивание с Rutube" if rutube_url else "Скачивание"
+    download_label = f"Скачивание с {video_link.label}" if video_link else "Скачивание"
     await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 0.2, download_label)
     input_path = job_dir / "input.mp4"
-    if rutube_url:
+    if video_link:
         try:
-            video_context = await fetch_rutube_metadata(rutube_url)
+            video_context = await fetch_remote_metadata(video_link.url)
             (job_dir / "video_context.json").write_text(
                 video_context.model_dump_json(ensure_ascii=False),
                 encoding="utf-8",
             )
         except Exception as exc:
-            logger.warning("rutube_metadata_failed", error=str(exc))
-        await download_rutube_video(rutube_url, input_path)
+            logger.warning("remote_metadata_failed", platform=video_link.platform, error=str(exc))
+        await download_remote_video(video_link.url, input_path, platform=video_link.label)
     else:
         await download_telegram_file(bot, file_id, input_path)
 
