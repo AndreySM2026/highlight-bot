@@ -8,4 +8,5 @@ class ProcessingStates(StatesGroup):
     waiting_video = State()
     analyzing = State()
     waiting_clip_count = State()
+    waiting_subtitles = State()
     rendering = State()

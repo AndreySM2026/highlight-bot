@@ -145,6 +145,23 @@ class Settings(BaseSettings):
             return True
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
+    subtitles_enabled: bool = Field(
+        default=True,
+        description="Разрешить вшитые русские субтитры (выбор кнопкой при рендере)",
+    )
+    subtitles_font_size: int = Field(default=52, description="Размер шрифта субтитров")
+    subtitles_max_chars_per_line: int = Field(default=34, description="Символов в строке субтитра")
+    subtitles_max_lines: int = Field(default=2, description="Макс. строк субтитра")
+
+    @field_validator("subtitles_enabled", mode="before")
+    @classmethod
+    def parse_subtitles_enabled(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None or value == "":
+            return True
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
     @field_validator("whisper_enabled", mode="before")
     @classmethod
     def parse_whisper_enabled(cls, value: object) -> bool:

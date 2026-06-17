@@ -22,6 +22,7 @@ from services.video.normalize import normalize_video
 from services.video.remote import RemoteVideoLink
 from services.video.ytdlp_common import download_remote_video, fetch_remote_metadata
 from services.video.transcribe import release_whisper_model, transcribe_audio
+from services.video.subtitles import apply_subtitles_to_clip, load_transcript
 from services.video.validation import VideoValidationError, validate_video
 from bot.keyboards.clip_count import build_clip_count_keyboard
 
@@ -230,6 +231,7 @@ async def run_render_pipeline(
     chat_id: int,
     clip_count: int,
     progress_message_id: int,
+    with_subtitles: bool = False,
 ) -> None:
     db = Database()
     job = await db.get_job(job_id)
@@ -263,6 +265,11 @@ async def run_render_pipeline(
 
     rendered_paths: list[Path] = []
     total = len(segments)
+    transcript = load_transcript(job_dir) if with_subtitles else []
+    burn_subs = with_subtitles and bool(transcript) and settings.subtitles_enabled
+    if with_subtitles and not transcript:
+        logger.warning("subtitles_requested_but_no_transcript", job_id=job_id)
+
     for idx, segment in enumerate(segments, start=1):
         ratio = (idx - 0.5) / max(total, 1)
         await _update_progress(
@@ -286,6 +293,18 @@ async def run_render_pipeline(
             ratio_start=ratio * 0.9,
             ratio_end=min(0.98, (idx / max(total, 1)) * 0.9),
         )
+        if burn_subs:
+            label = f"Субтитры {idx}/{total}"
+            await _update_progress(
+                bot,
+                chat_id,
+                progress_message_id,
+                job_id,
+                "rendering",
+                ratio * 0.95,
+                label,
+            )
+            rendered = await apply_subtitles_to_clip(rendered, transcript, segment)
         rendered_paths.append(rendered)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "sending", 0.2, "Отправка")
@@ -293,6 +312,8 @@ async def run_render_pipeline(
     for idx, (clip_path, segment) in enumerate(zip(rendered_paths, segments), start=1):
         duration_sec = int(segment.end_time - segment.start_time)
         caption_parts = [f"Клип {idx}/{total} · {duration_sec} сек", segment.title]
+        if burn_subs:
+            caption_parts.append("📝 С субтитрами")
         if segment.reason:
             caption_parts.append(segment.reason)
         caption = "\n".join(caption_parts)[:1024]

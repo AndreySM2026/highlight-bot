@@ -115,6 +115,7 @@ async def start_render_job(
     chat_id: int,
     clip_count: int,
     progress_message_id: int,
+    with_subtitles: bool = False,
 ) -> None:
     if job_id in _active_tasks:
         raise RuntimeError("Задача уже выполняется.")
@@ -125,7 +126,9 @@ async def start_render_job(
     await db.lock_user(user_id, job_id)
 
     task = asyncio.create_task(
-        _run_render_wrapper(bot, job_id, user_id, chat_id, clip_count, progress_message_id)
+        _run_render_wrapper(
+            bot, job_id, user_id, chat_id, clip_count, progress_message_id, with_subtitles
+        )
     )
     _active_tasks[job_id] = task
     task.add_done_callback(lambda _: _active_tasks.pop(job_id, None))
@@ -191,6 +194,7 @@ async def _run_render_wrapper(
     chat_id: int,
     clip_count: int,
     progress_message_id: int,
+    with_subtitles: bool,
 ) -> None:
     db = Database()
     try:
@@ -201,6 +205,7 @@ async def _run_render_wrapper(
             chat_id=chat_id,
             clip_count=clip_count,
             progress_message_id=progress_message_id,
+            with_subtitles=with_subtitles,
         )
     except asyncio.CancelledError:
         logger.info("render_job_cancelled", job_id=job_id)
