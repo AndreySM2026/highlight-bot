@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     database_path: Path = Path("data/bot.db")
     temp_dir: Path = Path("data/temp")
 
-    max_video_duration_sec: int = 1200
+    max_video_duration_sec: int = 3600
     max_upload_bytes: int = Field(
         default=20 * 1024 * 1024,
         description="Макс. размер файла для скачивания через Bot API (20 МБ)",
@@ -152,6 +152,14 @@ class Settings(BaseSettings):
     subtitles_font_size: int = Field(default=52, description="Размер шрифта субтитров")
     subtitles_max_chars_per_line: int = Field(default=34, description="Символов в строке субтитра")
     subtitles_max_lines: int = Field(default=2, description="Макс. строк субтитра")
+    subtitles_alignment: int = Field(
+        default=5,
+        description="ASS Alignment: 2 — низ по центру, 5 — середина по центру",
+    )
+    subtitles_margin_v: int = Field(
+        default=80,
+        description="ASS MarginV: отступ от низа (2) или от центра (5), пиксели",
+    )
 
     @field_validator("subtitles_enabled", mode="before")
     @classmethod

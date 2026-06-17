@@ -17,8 +17,8 @@ _BAD_START = re.compile(
     r"этого|этом|этим|того|тем|так|вот|ну|значит|короче)\b",
     re.IGNORECASE,
 )
-_TRAILING_SLASH = re.compile(r"/+\s*$")
-_MID_SLASH = re.compile(r"\s+/\s+")
+_TRAILING_SLASH = re.compile(r"[/\\]+\s*$")
+_MID_SLASH = re.compile(r"\s+[/\\]\s+")
 
 
 def normalize_speech_text(text: str) -> str:

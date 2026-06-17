@@ -55,7 +55,7 @@ def _can_remux(info: dict, rotation: int) -> bool:
 
 
 def _normalize_timeout(duration_sec: float) -> float:
-    return min(900.0, max(120.0, duration_sec * 1.5))
+    return min(7200.0, max(120.0, duration_sec * 2.0))
 
 
 async def normalize_video(input_path: Path, output_path: Path) -> dict:

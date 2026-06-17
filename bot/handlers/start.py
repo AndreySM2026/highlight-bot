@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from config.settings import settings
 from bot.states.processing import ProcessingStates
 
 router = Router()
@@ -15,7 +16,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.set_state(ProcessingStates.waiting_video)
     await message.answer(
         "👋 Привет! Я нарезаю короткие вертикальные хайлайты (9:16) из длинных видео.\n\n"
-        "📹 Отправьте видеофайл (до 20 МБ) или ссылку Rutube / VK (до 20 мин).\n"
+        f"📹 Отправьте видеофайл (до 20 МБ) или ссылку Rutube / VK (до {settings.max_video_duration_sec // 60} мин).\n"
         "🔗 Rutube: https://rutube.ru/video/...\n"
         "🔗 VK: https://vk.com/video-...\n"
         "⚡ Я найду яркие моменты и предложу, сколько клипов сделать.\n\n"

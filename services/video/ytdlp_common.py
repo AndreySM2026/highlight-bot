@@ -87,7 +87,7 @@ async def download_remote_video(url: str, destination: Path, *, platform: str) -
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=3600)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()

@@ -67,7 +67,7 @@ def _transcribe_sync(audio_path: Path) -> list[TranscriptSegment]:
 
 
 def _transcribe_timeout(duration_sec: float) -> float:
-    return min(900.0, max(120.0, duration_sec * 2.0))
+    return min(7200.0, max(300.0, duration_sec * 1.2))
 
 
 async def transcribe_audio(audio_path: Path, *, duration_sec: float) -> list[TranscriptSegment]:

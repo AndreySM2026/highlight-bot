@@ -14,7 +14,9 @@ from services.video.ffmpeg import run_ffmpeg
 
 logger = structlog.get_logger(__name__)
 
-_ASS_HEADER = f"""[Script Info]
+
+def _ass_header() -> str:
+    return f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {TARGET_WIDTH}
 PlayResY: {TARGET_HEIGHT}
@@ -22,7 +24,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,{settings.subtitles_font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,3,1,2,48,48,140,1
+Style: Default,DejaVu Sans,{settings.subtitles_font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,3,1,{settings.subtitles_alignment},48,48,{settings.subtitles_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -54,20 +56,19 @@ def _ass_timestamp(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{whole:02d}.{centis:02d}"
 
 
-def _escape_ass(text: str) -> str:
+def _escape_ass_line(text: str) -> str:
     return (
         text.replace("\\", "\\\\")
         .replace("{", "\\{")
         .replace("}", "\\}")
-        .replace("\n", "\\N")
     )
 
 
-def wrap_subtitle_text(text: str, *, max_chars: int | None = None) -> str:
+def wrap_subtitle_lines(text: str, *, max_chars: int | None = None) -> list[str]:
     text = normalize_speech_text(text)
     limit = max_chars or settings.subtitles_max_chars_per_line
     if not text:
-        return ""
+        return []
     words = re.split(r"\s+", text)
 
     lines: list[str] = []
@@ -84,7 +85,11 @@ def wrap_subtitle_text(text: str, *, max_chars: int | None = None) -> str:
             length += extra
     if current:
         lines.append(" ".join(current))
-    return "\\N".join(lines[: settings.subtitles_max_lines])
+    return lines[: settings.subtitles_max_lines]
+
+
+def _format_ass_text(lines: list[str]) -> str:
+    return "\\N".join(_escape_ass_line(line) for line in lines)
 
 
 def build_ass_for_clip(
@@ -104,20 +109,20 @@ def build_ass_for_clip(
         rel_end = min(clip_duration, seg.end - clip_start)
         if rel_end - rel_start < 0.25:
             continue
-        text = wrap_subtitle_text(seg.text)
-        if not text:
+        lines = wrap_subtitle_lines(seg.text)
+        if not lines:
             continue
         dialogues.append(
             "Dialogue: 0,"
             f"{_ass_timestamp(rel_start)},"
             f"{_ass_timestamp(rel_end)},"
-            f"Default,,0,0,0,,{_escape_ass(text)}"
+            f"Default,,0,0,0,,{_format_ass_text(lines)}"
         )
 
     if not dialogues:
         return False
 
-    output_path.write_text(_ASS_HEADER + "\n".join(dialogues) + "\n", encoding="utf-8-sig")
+    output_path.write_text(_ass_header() + "\n".join(dialogues) + "\n", encoding="utf-8-sig")
     return True
 
 
@@ -179,4 +184,3 @@ async def apply_subtitles_to_clip(
         return video_path
     finally:
         ass_path.unlink(missing_ok=True)
-
