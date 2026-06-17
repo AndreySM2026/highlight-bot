@@ -54,17 +54,49 @@ class DisplayGeometry:
         return abs(self.sar - 1.0) < 0.01
 
 
-def build_vertical_916_filter() -> str:
+def build_vertical_916_filter(
+    *,
+    crop_x: int | None = None,
+    crop_y: int | None = None,
+    scale_mul: float | None = None,
+    display_w: float | None = None,
+    display_h: float | None = None,
+) -> str:
     """
     Instagram Stories / Reels: 1080×1920, cover-crop 9:16 без растягивания.
 
-    Только scale-to-fill + центральный crop. Без force_original_aspect_ratio=disable
-    и без scale=iw*sar (ffmpeg учитывает SAR при autorotate).
+    crop_x/crop_y — смещение после scale-to-fill (для центровки по лицу).
     """
     w, h = TARGET_WIDTH, TARGET_HEIGHT
+    if (
+        crop_x is not None
+        and crop_y is not None
+        and scale_mul is not None
+        and display_w
+        and display_h
+    ):
+        base_scale = max(w / display_w, h / display_h)
+        if scale_mul > base_scale * 1.001:
+            sw = int(round(display_w * scale_mul))
+            sh = int(round(display_h * scale_mul))
+            sw += sw % 2
+            sh += sh % 2
+            return (
+                f"scale={sw}:{sh}:flags=lanczos,"
+                f"crop={w}:{h}:{crop_x}:{crop_y},"
+                "setsar=1"
+            )
+        return (
+            f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={w}:{h}:{crop_x}:{crop_y},"
+            "setsar=1"
+        )
+
+    x_expr = f"(iw-{w})/2"
+    y_expr = f"(ih-{h})/2"
     return (
         f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={w}:{h}:(iw-{w})/2:(ih-{h})/2,"
+        f"crop={w}:{h}:{x_expr}:{y_expr},"
         "setsar=1"
     )
 

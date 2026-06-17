@@ -131,6 +131,20 @@ class Settings(BaseSettings):
         description="Тип вычислений CPU: int8, float32; для GPU: float16",
     )
 
+    face_crop_enabled: bool = Field(
+        default=True,
+        description="Центрировать 9:16 crop по лицу (OpenCV)",
+    )
+
+    @field_validator("face_crop_enabled", mode="before")
+    @classmethod
+    def parse_face_crop_enabled(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None or value == "":
+            return True
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
     @field_validator("whisper_enabled", mode="before")
     @classmethod
     def parse_whisper_enabled(cls, value: object) -> bool:

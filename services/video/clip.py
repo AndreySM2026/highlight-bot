@@ -11,6 +11,12 @@ from services.video.aspect import (
     build_vertical_916_filter,
     get_display_geometry,
 )
+from services.video.face_crop import (
+    compute_crop_origin,
+    detect_focus_point,
+    needs_reframe,
+    reframe_min_scale,
+)
 from services.video.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
 
 logger = structlog.get_logger(__name__)
@@ -63,6 +69,48 @@ def _encode_args(*, video_filter: str | None) -> list[str]:
     return args
 
 
+async def _build_crop_filter(
+    input_path: Path,
+    segment: HighlightSegment,
+    display,
+) -> str | None:
+    passthrough = display.is_exact_target()
+    focus = await detect_focus_point(
+        input_path,
+        start_time=segment.start_time,
+        duration=max(0.1, segment.end_time - segment.start_time),
+        work_dir=input_path.parent,
+    )
+
+    if passthrough and (not focus or not needs_reframe(display, focus[0], focus[1])):
+        return None
+
+    if focus:
+        min_scale = reframe_min_scale(display, focus[0], focus[1]) if passthrough else 1.0
+        scale_mul, crop_x, crop_y = compute_crop_origin(
+            display.display_width,
+            display.display_height,
+            focus[0],
+            focus[1],
+            min_scale=min_scale,
+        )
+        logger.info(
+            "render_clip_face_crop",
+            crop_x=crop_x,
+            crop_y=crop_y,
+            scale_mul=round(scale_mul, 3),
+        )
+        return build_vertical_916_filter(
+            crop_x=crop_x,
+            crop_y=crop_y,
+            scale_mul=scale_mul,
+            display_w=display.display_width,
+            display_h=display.display_height,
+        )
+
+    return build_vertical_916_filter()
+
+
 async def render_clip(
     input_path: Path,
     segment: HighlightSegment,
@@ -71,8 +119,8 @@ async def render_clip(
     geometry: dict | None = None,
 ) -> Path:
     display = await get_display_geometry(input_path)
-    passthrough = display.is_exact_target()
-    crop_filter = None if passthrough else build_vertical_916_filter()
+    crop_filter = await _build_crop_filter(input_path, segment, display)
+    passthrough = crop_filter is None
     clip_duration = max(0.1, segment.end_time - segment.start_time)
     logger.info(
         "render_clip_start",
