@@ -66,12 +66,14 @@ def snap_segment_to_blocks(
             best_single = block
 
     if best_single and best_overlap >= settings.speech_min_block_sec * 0.5:
-        return segment.model_copy(
-            update={
-                "start_time": best_single.start,
-                "end_time": min(best_single.end, best_single.start + settings.max_clip_sec),
-            }
+        snapped = segment_from_blocks(
+            [best_single],
+            title=segment.title,
+            reason=segment.reason,
+            score=segment.score,
         )
+        if snapped:
+            return snapped
 
     chosen = _blocks_for_segment(segment, blocks)
     if not chosen:

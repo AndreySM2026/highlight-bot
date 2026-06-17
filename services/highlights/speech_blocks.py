@@ -9,6 +9,11 @@ from services.highlights.schemas import (
     SpeechBlock,
     VideoContext,
 )
+from services.highlights.utterances import (
+    build_utterance_blocks,
+    is_complete_thought,
+    segment_from_utterance_blocks,
+)
 
 
 def _significant_pauses(silent_ranges: list[SilentRange]) -> list[SilentRange]:
@@ -21,9 +26,18 @@ def _significant_pauses(silent_ranges: list[SilentRange]) -> list[SilentRange]:
 
 def build_speech_blocks(activity_map: ActivityMap) -> list[SpeechBlock]:
     """
-    Блоки речи между значимыми паузами.
-    Каждый блок — потенциально одна законченная мысль/реплика.
+    Блоки речи: при наличии Whisper — по законченным фразам, иначе по паузам.
     """
+    if activity_map.transcript_segments:
+        utterances = build_utterance_blocks(activity_map.transcript_segments)
+        if utterances:
+            return utterances
+
+    return _build_pause_blocks(activity_map)
+
+
+def _build_pause_blocks(activity_map: ActivityMap) -> list[SpeechBlock]:
+    """Блоки речи между значимыми паузами (fallback без транскрипта)."""
     pauses = _significant_pauses(activity_map.silent_ranges)
     raw: list[tuple[float, float]] = []
     cursor = 0.0
@@ -76,22 +90,7 @@ def segment_from_blocks(
     reason: str,
     score: float,
 ) -> HighlightSegment | None:
-    if not blocks:
-        return None
-    start = blocks[0].start
-    end = blocks[-1].end
-    duration = end - start
-    if duration < settings.min_clip_sec:
-        return None
-    if duration > settings.max_clip_sec:
-        end = start + settings.max_clip_sec
-    return HighlightSegment(
-        start_time=start,
-        end_time=round(end, 2),
-        score=score,
-        title=title,
-        reason=reason,
-    )
+    return segment_from_utterance_blocks(blocks, title=title, reason=reason, score=score)
 
 
 def detect_from_speech_blocks(
@@ -104,13 +103,13 @@ def detect_from_speech_blocks(
     for block in blocks:
         if block.duration < settings.min_clip_sec:
             continue
-        title = f"Реплика {block.id + 1}"
-        if context and context.title:
-            title = f"{context.title[:50]}… ({int(block.start // 60)}:{int(block.start % 60):02d})"
+        if block.text and not is_complete_thought(block.text):
+            continue
+        title = block.text[:57] + "…" if block.text and len(block.text) > 60 else (block.text or f"Реплика {block.id + 1}")
         seg = segment_from_blocks(
             [block],
             title=title,
-            reason="Целый фрагмент речи от паузы до паузы",
+            reason="Законченная мысль из расшифровки речи",
             score=round(_block_score(block, activity_map), 2),
         )
         if seg:

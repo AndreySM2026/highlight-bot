@@ -9,6 +9,7 @@ from faster_whisper import WhisperModel
 
 from config.settings import settings
 from services.highlights.schemas import TranscriptSegment
+from services.highlights.utterances import normalize_speech_text
 
 logger = structlog.get_logger(__name__)
 
@@ -46,7 +47,7 @@ def _transcribe_sync(audio_path: Path) -> list[TranscriptSegment]:
     )
     segments: list[TranscriptSegment] = []
     for item in segments_iter:
-        text = item.text.strip()
+        text = normalize_speech_text(item.text)
         if not text:
             continue
         segments.append(

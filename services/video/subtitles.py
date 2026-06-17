@@ -7,6 +7,7 @@ from pathlib import Path
 import structlog
 
 from config.settings import settings
+from services.highlights.utterances import normalize_speech_text
 from services.highlights.schemas import HighlightSegment, TranscriptSegment
 from services.video.aspect import TARGET_HEIGHT, TARGET_WIDTH
 from services.video.ffmpeg import run_ffmpeg
@@ -63,10 +64,11 @@ def _escape_ass(text: str) -> str:
 
 
 def wrap_subtitle_text(text: str, *, max_chars: int | None = None) -> str:
+    text = normalize_speech_text(text)
     limit = max_chars or settings.subtitles_max_chars_per_line
-    words = re.split(r"\s+", text.strip())
-    if not words:
+    if not text:
         return ""
+    words = re.split(r"\s+", text)
 
     lines: list[str] = []
     current: list[str] = []

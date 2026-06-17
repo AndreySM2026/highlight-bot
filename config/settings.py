@@ -174,6 +174,14 @@ class Settings(BaseSettings):
         default=0.45,
         description="Мин. длина паузы для разделения речевых блоков",
     )
+    utterance_pause_sec: float = Field(
+        default=0.55,
+        description="Пауза Whisper для границы законченной фразы",
+    )
+    utterance_min_sec: float = Field(
+        default=1.5,
+        description="Мин. длина utterance-блока при группировке Whisper",
+    )
     speech_min_block_sec: float = Field(
         default=2.0,
         description="Мин. длина блока речи",

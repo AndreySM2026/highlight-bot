@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import structlog
 
+from config.settings import settings
 from services.highlights.heuristic import detect_highlights_heuristic
 from services.highlights.merge import finalize_highlight_result
 from services.highlights.schemas import ActivityMap, HighlightResult, HighlightSegment, VideoContext
@@ -31,10 +32,10 @@ def _parse_highlight_response(data: dict, activity_map: ActivityMap) -> Highligh
                 bid = int(raw_id)
                 if bid in blocks_by_id:
                     chosen.append(blocks_by_id[bid])
-            chosen.sort(key=lambda b: b.id)
+            chosen.sort(key=lambda b: b.start)
             if len(chosen) >= 2:
                 for a, b in zip(chosen, chosen[1:]):
-                    if b.id != a.id + 1 or b.start - a.end > 1.5:
+                    if b.start - a.end > settings.utterance_pause_sec + 0.35:
                         chosen = [chosen[0]]
                         break
             seg = segment_from_blocks(chosen, title=title, reason=reason, score=score)
