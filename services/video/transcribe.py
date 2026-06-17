@@ -77,3 +77,12 @@ async def transcribe_audio(audio_path: Path, *, duration_sec: float) -> list[Tra
         asyncio.to_thread(_transcribe_sync, audio_path),
         timeout=timeout,
     )
+
+
+def release_whisper_model() -> None:
+    """Освобождает RAM после транскрипции — перед тяжёлым ffmpeg-рендером."""
+    global _model
+    with _model_lock:
+        if _model is not None:
+            logger.info("whisper_model_release")
+            _model = None

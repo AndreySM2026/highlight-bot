@@ -116,6 +116,30 @@ class Database:
         finally:
             await conn.close()
 
+    async def get_locked_job_id(self, user_id: int) -> str | None:
+        conn = await self._connection()
+        try:
+            cursor = await conn.execute(
+                "SELECT job_id FROM user_locks WHERE user_id = ?",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            return str(row["job_id"]) if row else None
+        finally:
+            await conn.close()
+
+    async def clear_all_locks(self) -> int:
+        conn = await self._connection()
+        try:
+            cursor = await conn.execute("SELECT COUNT(*) AS c FROM user_locks")
+            row = await cursor.fetchone()
+            count = int(row["c"]) if row else 0
+            await conn.execute("DELETE FROM user_locks")
+            await conn.commit()
+            return count
+        finally:
+            await conn.close()
+
     async def create_job(
         self,
         job_id: str,

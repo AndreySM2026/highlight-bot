@@ -24,6 +24,44 @@ def create_job_dir() -> tuple[str, Path]:
     return job_id, job_dir
 
 
+async def clear_stale_locks() -> int:
+    """После рестарта контейнера задачи в памяти пропали — снимаем зависшие блокировки."""
+    db = Database()
+    count = await db.clear_all_locks()
+    if count:
+        logger.warning("stale_locks_cleared", count=count)
+    return count
+
+
+async def cancel_user_job(user_id: int) -> tuple[bool, str | None]:
+    """
+    Отменяет фоновую задачу и снимает блокировку.
+    Возвращает (была_ли_блокировка, job_id).
+    """
+    db = Database()
+    job_id = await db.get_locked_job_id(user_id)
+    was_locked = job_id is not None
+
+    if job_id and job_id in _active_tasks:
+        task = _active_tasks[job_id]
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            logger.info("job_cancelled", job_id=job_id, user_id=user_id)
+        except Exception as exc:
+            logger.warning("job_cancel_wait_failed", job_id=job_id, error=str(exc))
+
+    await db.unlock_user(user_id)
+
+    if job_id:
+        job = await db.get_job(job_id)
+        if job and job.get("status") in {"rendering", "downloading", "normalizing", "transcribing", "analyzing", "metadata"}:
+            await db.update_job(job_id, status="waiting_choice", progress=70)
+
+    return was_locked, job_id
+
+
 async def start_analysis_job(
     bot: Bot,
     *,
@@ -116,6 +154,9 @@ async def _run_analysis_wrapper(
             rutube_url=rutube_url,
             mime_type=mime_type,
         )
+    except asyncio.CancelledError:
+        logger.info("analysis_job_cancelled", job_id=job_id)
+        raise
     except VideoValidationError as exc:
         logger.warning("analysis_job_validation_failed", job_id=job_id, error=str(exc))
         error_text = str(exc)
@@ -123,7 +164,6 @@ async def _run_analysis_wrapper(
         logger.exception("analysis_job_failed", job_id=job_id, error=str(exc))
         error_text = f"❌ Ошибка обработки: {exc}"
     else:
-        # Анализ завершён — ждём выбор клипов; снимаем lock до рендера.
         return
     finally:
         await db.unlock_user(user_id)
@@ -161,8 +201,20 @@ async def _run_render_wrapper(
             clip_count=clip_count,
             progress_message_id=progress_message_id,
         )
+    except asyncio.CancelledError:
+        logger.info("render_job_cancelled", job_id=job_id)
+        await db.update_job(job_id, status="waiting_choice", progress=70)
+        try:
+            await bot.send_message(
+                chat_id,
+                "⏹ Рендер остановлен. Нажмите кнопку с числом клипов ещё раз или отправьте новое видео.",
+            )
+        except Exception:
+            pass
+        raise
     except Exception as exc:
         logger.exception("render_job_failed", job_id=job_id, error=str(exc))
+        await db.update_job(job_id, status="waiting_choice", progress=70)
         try:
             await bot.send_message(chat_id, f"❌ Ошибка рендера: {exc}")
         except Exception:

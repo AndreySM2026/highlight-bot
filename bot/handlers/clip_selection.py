@@ -39,13 +39,13 @@ async def handle_clip_selection(callback: CallbackQuery, state: FSMContext) -> N
         await callback.answer("Это не ваша задача.", show_alert=True)
         return
 
-    if job["status"] != "waiting_choice":
-        await callback.answer("Задача уже обрабатывается.", show_alert=True)
+    if job["status"] not in {"waiting_choice", "rendering"}:
+        await callback.answer("Задача уже обработана или устарела.", show_alert=True)
         return
 
-    # После анализа lock должен быть снят; если остался (старый баг) — снимаем.
     if await db.has_active_job(callback.from_user.id):
-        await db.unlock_user(callback.from_user.id)
+        await callback.answer("Уже идёт обработка. Подождите или /cancel", show_alert=True)
+        return
 
     await callback.answer(f"Рендерим {clip_count} клипов...")
     await callback.message.edit_reply_markup(reply_markup=None)

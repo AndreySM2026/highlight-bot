@@ -34,6 +34,12 @@ async def root_handler(_: web.Request) -> web.Response:
 
 async def activate_bot_task(app: web.Application) -> None:
     """Не блокирует on_startup; бот активируется только если configure_app успешен."""
+    from services.jobs.manager import clear_stale_locks
+
+    cleared = await clear_stale_locks()
+    if cleared:
+        print(f"=== Cleared {cleared} stale user lock(s) after restart ===", flush=True)
+
     if not app.get("bot"):
         print("WARNING: bot not configured, skip activation", flush=True)
         return

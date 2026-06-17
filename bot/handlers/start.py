@@ -37,16 +37,16 @@ async def cmd_help(message: Message) -> None:
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
-    from services.storage.database import Database
+    from services.jobs.manager import cancel_user_job
 
-    db = Database()
-    was_locked = await db.has_active_job(message.from_user.id)
-    if was_locked:
-        await db.unlock_user(message.from_user.id)
+    if not message.from_user:
+        return
+
+    was_locked, job_id = await cancel_user_job(message.from_user.id)
     await state.set_state(ProcessingStates.waiting_video)
     if was_locked:
         await message.answer(
-            "✅ Блокировка снята.\n\n"
+            "✅ Обработка остановлена, блокировка снята.\n\n"
             "Если анализ уже завершён — снова нажмите кнопку с числом клипов "
             "под сообщением с результатами.\n"
             "Или отправьте новое видео / ссылку Rutube."

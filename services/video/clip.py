@@ -16,6 +16,10 @@ from services.video.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
 logger = structlog.get_logger(__name__)
 
 
+def _render_timeout(clip_duration_sec: float) -> float:
+    return min(600.0, max(120.0, clip_duration_sec * 6.0 + 60.0))
+
+
 async def _assert_output_dimensions(path: Path) -> None:
     probe = await run_ffprobe(path)
     stream = next(
@@ -42,7 +46,7 @@ def _encode_args(*, video_filter: str | None) -> list[str]:
         "-pix_fmt",
         "yuv420p",
         "-preset",
-        "fast",
+        "veryfast",
         "-crf",
         "23",
         "-c:a",
@@ -69,6 +73,7 @@ async def render_clip(
     display = await get_display_geometry(input_path)
     passthrough = display.is_exact_target()
     crop_filter = None if passthrough else build_vertical_916_filter()
+    clip_duration = max(0.1, segment.end_time - segment.start_time)
     logger.info(
         "render_clip_start",
         input=str(input_path),
@@ -79,19 +84,23 @@ async def render_clip(
         filter=crop_filter,
         start=segment.start_time,
         end=segment.end_time,
+        duration=round(clip_duration, 2),
     )
     await run_ffmpeg(
         [
-            "-i",
-            str(input_path),
             "-ss",
             str(segment.start_time),
-            "-to",
-            str(segment.end_time),
+            "-i",
+            str(input_path),
+            "-t",
+            str(clip_duration),
+            "-threads",
+            "1",
             *_encode_args(video_filter=crop_filter),
             str(output_path),
         ],
         label="render_clip",
+        timeout=_render_timeout(clip_duration),
     )
     await _assert_output_dimensions(output_path)
     return await compress_for_telegram(output_path)
@@ -102,10 +111,14 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
         return path
 
     compressed = path.with_name(f"{path.stem}_compressed{path.suffix}")
+    probe = await run_ffprobe(path)
+    clip_duration = float(probe.get("format", {}).get("duration", 60))
     await run_ffmpeg(
         [
             "-i",
             str(path),
+            "-threads",
+            "1",
             "-c:v",
             "libx264",
             "-profile:v",
@@ -113,7 +126,7 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
             "-pix_fmt",
             "yuv420p",
             "-preset",
-            "fast",
+            "veryfast",
             "-crf",
             "28",
             "-c:a",
@@ -129,6 +142,7 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
             str(compressed),
         ],
         label="compress_clip",
+        timeout=_render_timeout(clip_duration),
     )
     if compressed.exists() and compressed.stat().st_size > 0:
         await _assert_output_dimensions(compressed)

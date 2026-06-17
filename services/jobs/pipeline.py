@@ -20,7 +20,7 @@ from services.video.clip import render_clip
 from services.video.download import download_telegram_file
 from services.video.normalize import normalize_video
 from services.video.rutube import download_rutube_video, fetch_rutube_metadata
-from services.video.transcribe import transcribe_audio
+from services.video.transcribe import release_whisper_model, transcribe_audio
 from services.video.validation import VideoValidationError, validate_video
 from bot.keyboards.clip_count import build_clip_count_keyboard
 
@@ -178,6 +178,7 @@ async def run_analysis_pipeline(
             logger.warning("whisper_failed", error=str(exc))
         finally:
             audio_path.unlink(missing_ok=True)
+            release_whisper_model()
         await _update_progress(
             bot, chat_id, progress_message_id, job_id, "transcribing", 1.0, "Расшифровка речи"
         )
@@ -250,6 +251,8 @@ async def run_render_pipeline(
     if not source_path.exists():
         source_path = normalized_path
 
+    await db.update_job(job_id, status="rendering", progress=stage_to_percent("rendering", 0))
+
     await bot.edit_message_text(
         chat_id=chat_id,
         message_id=progress_message_id,
@@ -260,7 +263,7 @@ async def run_render_pipeline(
     rendered_paths: list[Path] = []
     total = len(segments)
     for idx, segment in enumerate(segments, start=1):
-        ratio = idx / max(total, 1)
+        ratio = (idx - 0.5) / max(total, 1)
         await _update_progress(
             bot,
             chat_id,
@@ -271,7 +274,17 @@ async def run_render_pipeline(
             f"Рендер клипа {idx}/{total}",
         )
         output_path = job_dir / f"clip_{idx:03d}.mp4"
-        rendered = await render_clip(source_path, segment, output_path)
+        rendered = await _run_stage_with_heartbeat(
+            render_clip(source_path, segment, output_path),
+            bot,
+            chat_id,
+            progress_message_id,
+            job_id,
+            "rendering",
+            f"Рендер клипа {idx}/{total}",
+            ratio_start=ratio * 0.9,
+            ratio_end=min(0.98, (idx / max(total, 1)) * 0.9),
+        )
         rendered_paths.append(rendered)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "sending", 0.2, "Отправка")
