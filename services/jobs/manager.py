@@ -160,6 +160,16 @@ async def _run_analysis_wrapper(
         )
     except asyncio.CancelledError:
         logger.info("analysis_job_cancelled", job_id=job_id)
+        try:
+            job = await db.get_job(job_id)
+            if job and job.get("progress_message_id"):
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=job["progress_message_id"],
+                    text="⏹ Обработка прервана. Отправьте видео или ссылку ещё раз.",
+                )
+        except Exception:
+            pass
         raise
     except VideoValidationError as exc:
         logger.warning("analysis_job_validation_failed", job_id=job_id, error=str(exc))

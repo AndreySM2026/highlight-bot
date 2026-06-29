@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import structlog
@@ -20,6 +21,10 @@ from services.video.face_crop import (
 from services.video.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
 
 logger = structlog.get_logger(__name__)
+
+
+def _ffmpeg_threads() -> str:
+    return str(min(4, max(2, os.cpu_count() or 2)))
 
 
 def _render_timeout(clip_duration_sec: float) -> float:
@@ -143,7 +148,7 @@ async def render_clip(
             "-t",
             str(clip_duration),
             "-threads",
-            "1",
+            _ffmpeg_threads(),
             *_encode_args(video_filter=crop_filter),
             str(output_path),
         ],
@@ -166,7 +171,7 @@ async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -
             "-i",
             str(path),
             "-threads",
-            "1",
+            _ffmpeg_threads(),
             "-c:v",
             "libx264",
             "-profile:v",

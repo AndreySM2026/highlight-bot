@@ -158,8 +158,13 @@ async def run_analysis_pipeline(
     await _update_progress(bot, chat_id, progress_message_id, job_id, "metadata", 1.0, "Анализ метаданных")
 
     if settings.whisper_enabled:
+        whisper_label = "Расшифровка речи"
+        if duration >= settings.long_video_sec:
+            whisper_label = (
+                f"Расшифровка речи · ускоренный режим ({settings.whisper_long_model})"
+            )
         await _update_progress(
-            bot, chat_id, progress_message_id, job_id, "transcribing", 0.2, "Расшифровка речи"
+            bot, chat_id, progress_message_id, job_id, "transcribing", 0.2, whisper_label
         )
         try:
             transcript = await _run_stage_with_heartbeat(
@@ -169,7 +174,7 @@ async def run_analysis_pipeline(
                 progress_message_id,
                 job_id,
                 "transcribing",
-                "Расшифровка речи",
+                whisper_label,
             )
             activity_map.transcript_segments = transcript
             (job_dir / "transcript.json").write_text(

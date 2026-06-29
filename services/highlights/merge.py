@@ -20,9 +20,6 @@ def _clamp_duration(segment: HighlightSegment, blocks: list[SpeechBlock]) -> Hig
         if fitted:
             return segment.model_copy(update={"start_time": fitted[0].start, "end_time": fitted[-1].end})
 
-    duration = segment.end_time - segment.start_time
-    if duration > settings.max_clip_sec:
-        segment = segment.model_copy(update={"end_time": segment.start_time + settings.max_clip_sec})
     return segment
 
 
@@ -43,6 +40,8 @@ def normalize_segments(
         if seg.end_time > duration_sec:
             seg.end_time = duration_sec
         if seg.end_time - seg.start_time < settings.min_clip_sec:
+            continue
+        if seg.end_time - seg.start_time > settings.max_clip_sec + 0.5:
             continue
         if any(_overlaps(seg, existing) for existing in cleaned):
             continue

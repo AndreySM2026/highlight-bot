@@ -3,15 +3,26 @@ from __future__ import annotations
 import json
 
 from config.settings import settings
-from services.highlights.schemas import ActivityMap, VideoContext
+from services.highlights.schemas import ActivityMap, SpeechBlock, VideoContext
 from services.highlights.speech_blocks import build_speech_blocks
 from services.highlights.transcript import attach_transcript_to_blocks
+from services.video.long_video import is_long_video
+
+
+def _sample_blocks_for_prompt(blocks: list[SpeechBlock], max_blocks: int) -> list[SpeechBlock]:
+    if len(blocks) <= max_blocks:
+        return blocks
+    step = len(blocks) / max_blocks
+    sampled = [blocks[int(i * step)] for i in range(max_blocks)]
+    return sampled
 
 
 def build_highlight_prompt(activity_map: ActivityMap, context: VideoContext | None = None) -> str:
     blocks = build_speech_blocks(activity_map)
     if activity_map.transcript_segments:
         blocks = attach_transcript_to_blocks(blocks, activity_map.transcript_segments)
+    if is_long_video(activity_map.duration_sec):
+        blocks = _sample_blocks_for_prompt(blocks, settings.highlight_prompt_max_blocks)
     blocks_payload = [b.model_dump() for b in blocks]
     has_transcript = any(b.text for b in blocks)
 

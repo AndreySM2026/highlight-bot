@@ -3,10 +3,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import structlog
+
 from config.settings import settings
 from services.highlights.schemas import ActivityMap, ActivityWindow, SilentRange
 from services.video.audio import extract_audio
 from services.video.ffmpeg import run_ffmpeg
+from services.video.long_video import activity_window_sec, is_long_video
+
+
+logger = structlog.get_logger(__name__)
 
 
 def _parse_silence(stderr: str) -> list[tuple[float, float]]:
@@ -77,23 +83,29 @@ async def build_activity_map(
         ],
         label="volume_detect",
     )
-    scene_out = await run_ffmpeg(
-        [
-            "-i",
-            str(video_path),
-            "-vf",
-            "select='gt(scene,0.35)',showinfo",
-            "-f",
-            "null",
-            "-",
-        ],
-        label="scene_detect",
-    )
+    if duration_sec >= settings.skip_scene_detect_sec:
+        logger.info("scene_detect_skipped", duration_sec=round(duration_sec, 1))
+        scene_out = ""
+    else:
+        scene_out = await run_ffmpeg(
+            [
+                "-i",
+                str(video_path),
+                "-vf",
+                "select='gt(scene,0.35)',showinfo",
+                "-f",
+                "null",
+                "-",
+            ],
+            label="scene_detect",
+        )
 
     silent_ranges = _parse_silence(silence_out)
     global_volume = _parse_volume(volume_out)
 
-    window_size = settings.activity_window_sec
+    window_size = activity_window_sec(duration_sec)
+    if is_long_video(duration_sec):
+        logger.info("long_video_analysis_mode", duration_sec=round(duration_sec, 1), window_sec=window_size)
     windows: list[ActivityWindow] = []
     start = 0.0
     while start < duration_sec:

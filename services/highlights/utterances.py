@@ -115,7 +115,11 @@ def fit_blocks_to_max_duration(blocks: list[SpeechBlock]) -> list[SpeechBlock]:
             fitted = candidate
         else:
             break
-    return fitted or [blocks[0]]
+    if not fitted:
+        return []
+    if fitted[-1].end - fitted[0].start > settings.max_clip_sec:
+        return []
+    return fitted
 
 
 def segment_from_utterance_blocks(
@@ -129,9 +133,13 @@ def segment_from_utterance_blocks(
         return None
     blocks = sorted(blocks, key=lambda b: b.id)
     blocks = fit_blocks_to_max_duration(blocks)
+    if not blocks:
+        return None
     start = blocks[0].start
     end = blocks[-1].end
     if end - start < settings.min_clip_sec:
+        return None
+    if end - start > settings.max_clip_sec + 0.5:
         return None
     return HighlightSegment(
         start_time=start,

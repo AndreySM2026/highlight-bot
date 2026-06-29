@@ -109,6 +109,22 @@ class Settings(BaseSettings):
     target_height: int = 1920
 
     activity_window_sec: int = Field(default=20, description="Размер окна карты активности")
+    activity_window_long_sec: int = Field(
+        default=60,
+        description="Размер окна карты активности для видео ≥ long_video_sec",
+    )
+    long_video_sec: int = Field(
+        default=1800,
+        description="Порог «длинного» видео (30 мин) — ускоренный режим анализа",
+    )
+    skip_scene_detect_sec: int = Field(
+        default=1800,
+        description="Не сканировать смены сцен на видео длиннее (экономит минуты на 30–60 мин роликах)",
+    )
+    highlight_prompt_max_blocks: int = Field(
+        default=50,
+        description="Макс. speech_blocks в промпте LLM для длинных видео",
+    )
     analysis_max_height: int = Field(
         default=720,
         description="Макс. высота прокси-видео для анализа (не влияет на качество клипов)",
@@ -118,8 +134,18 @@ class Settings(BaseSettings):
         description="Распознавание речи Whisper перед выбором хайлайтов",
     )
     whisper_model: str = Field(
-        default="small",
-        description="Модель faster-whisper: tiny, base, small, medium",
+        default="base",
+        description="Модель faster-whisper для видео < 30 мин: tiny, base, small",
+    )
+    whisper_long_model: str = Field(
+        default="tiny",
+        description="Модель Whisper для видео ≥ 30 мин (быстрее в 3–5 раз)",
+    )
+    whisper_beam_size: int = Field(default=3, description="beam_size Whisper для коротких видео")
+    whisper_long_beam_size: int = Field(default=1, description="beam_size Whisper для длинных видео")
+    whisper_cpu_threads: int = Field(
+        default=0,
+        description="Потоки CPU для Whisper, 0 = все ядра",
     )
     whisper_language: str = Field(
         default="ru",
