@@ -69,6 +69,7 @@ async def status_handler(request: web.Request) -> web.Response:
                     "url": wh.url,
                     "pending_update_count": wh.pending_update_count,
                     "last_error_message": wh.last_error_message,
+                    "allowed_updates": wh.allowed_updates,
                     "last_error_date": wh.last_error_date,
                 }
             except Exception as exc:

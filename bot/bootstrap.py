@@ -105,7 +105,7 @@ def configure_app(app: web.Application) -> Bot | None:
     return bot
 
 
-async def _try_activate_once(bot: Bot) -> bool:
+async def _try_activate_once(bot: Bot, allowed_updates: list[str]) -> bool:
     """Одна попытка get_me + set_webhook. True — бот готов."""
     me = None
     for attempt in range(1, WEBHOOK_RETRIES + 1):
@@ -126,19 +126,33 @@ async def _try_activate_once(bot: Bot) -> bool:
 
     for attempt in range(1, WEBHOOK_RETRIES + 1):
         try:
+            # allowed_updates передаём явно: без него Telegram оставляет прежний список,
+            # и если когда-то там было только "message", нажатия кнопок (callback_query) не приходят.
             await bot.set_webhook(
                 url=settings.full_webhook_url,
                 secret_token=settings.webhook_secret,
                 drop_pending_updates=True,
+                allowed_updates=allowed_updates,
             )
-            print(f"Webhook set: {settings.full_webhook_url}", flush=True)
-            logger.info("webhook_set", url=settings.full_webhook_url, username=me.username)
+            print(f"Webhook set: {settings.full_webhook_url} | updates: {allowed_updates}", flush=True)
+            logger.info(
+                "webhook_set",
+                url=settings.full_webhook_url,
+                username=me.username,
+                allowed_updates=allowed_updates,
+            )
             return True
         except Exception as exc:
             print(f"set_webhook attempt {attempt}/{WEBHOOK_RETRIES} failed: {exc}", flush=True)
             if attempt < WEBHOOK_RETRIES:
                 await asyncio.sleep(3 * attempt)
     return False
+
+
+def _allowed_updates(app: web.Application) -> list[str]:
+    """Типы апдейтов, на которые есть обработчики (message, callback_query, …)."""
+    dp: Dispatcher = app["dp"]
+    return dp.resolve_used_update_types()
 
 
 async def _notify_interrupted(app: web.Application, bot: Bot) -> None:
@@ -161,7 +175,7 @@ async def activate_bot(app: web.Application) -> None:
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
 
-    ok = await _try_activate_once(bot)
+    ok = await _try_activate_once(bot, _allowed_updates(app))
     app["telegram_ready"] = ok
     if ok:
         await _notify_interrupted(app, bot)
@@ -185,7 +199,7 @@ async def activate_bot_loop(app: web.Application) -> None:
         if not bot:
             return
         print("=== Retrying Telegram activation ===", flush=True)
-        if await _try_activate_once(bot):
+        if await _try_activate_once(bot, _allowed_updates(app)):
             app["telegram_ready"] = True
             print("=== Bot activation done ===", flush=True)
             await _notify_interrupted(app, bot)
