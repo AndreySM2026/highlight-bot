@@ -15,6 +15,21 @@ from services.timeweb.prompts.highlight_detection import build_highlight_prompt
 logger = structlog.get_logger(__name__)
 
 
+def _block_range(item: dict) -> tuple[int, int] | None:
+    """Диапазон фраз отрывка: start_block/end_block или (старый формат) список block_ids."""
+    try:
+        if "start_block" in item and "end_block" in item:
+            first, last = int(item["start_block"]), int(item["end_block"])
+        elif item.get("block_ids"):
+            ids = [int(raw) for raw in item["block_ids"]]
+            first, last = min(ids), max(ids)
+        else:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return (first, last) if first <= last else (last, first)
+
+
 def _parse_highlight_response(data: dict, activity_map: ActivityMap) -> HighlightResult:
     blocks = build_speech_blocks(activity_map)
     blocks_by_id = {b.id: b for b in blocks}
@@ -23,21 +38,20 @@ def _parse_highlight_response(data: dict, activity_map: ActivityMap) -> Highligh
     for item in data.get("segments", []):
         title = str(item.get("title", "Хайлайт"))
         reason = str(item.get("reason", ""))
-        score = float(item.get("score", 0.5))
+        score = min(1.0, max(0.0, float(item.get("score", 0.5))))
 
-        block_ids = item.get("block_ids")
-        if block_ids is not None:
-            chosen = []
-            for raw_id in block_ids:
-                bid = int(raw_id)
-                if bid in blocks_by_id:
-                    chosen.append(blocks_by_id[bid])
-            chosen.sort(key=lambda b: b.start)
-            if len(chosen) >= 2:
-                for a, b in zip(chosen, chosen[1:]):
-                    if b.start - a.end > settings.utterance_pause_sec + 0.35:
-                        chosen = [chosen[0]]
-                        break
+        block_range = _block_range(item)
+        if block_range is not None:
+            first, last = block_range
+            # Берём ВСЕ фразы диапазона подряд: мысль из нескольких фраз не должна схлопываться в одну
+            chosen = [blocks_by_id[i] for i in range(first, last + 1) if i in blocks_by_id]
+            if not chosen:
+                continue
+            span = chosen[-1].end - chosen[0].start
+            if span > settings.max_clip_sec + 0.5:
+                # Обрезать конец = оборвать мысль; лучше отказаться от отрывка
+                logger.info("highlight_too_long_skipped", first=first, last=last, span=round(span, 1))
+                continue
             seg = segment_from_blocks(chosen, title=title, reason=reason, score=score)
             if seg:
                 segments.append(seg)
@@ -55,7 +69,7 @@ def _parse_highlight_response(data: dict, activity_map: ActivityMap) -> Highligh
             )
 
     return HighlightResult(
-        recommended_clip_count=int(data.get("recommended_clip_count", max(1, len(segments) // 2))),
+        recommended_clip_count=min(10, max(1, int(data.get("recommended_clip_count") or max(1, len(segments) // 2)))),
         segments=segments,
         source="qwen",
         video_theme=str(data.get("video_theme", "")),

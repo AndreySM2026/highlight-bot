@@ -128,15 +128,24 @@ class Database:
         finally:
             await conn.close()
 
-    async def clear_all_locks(self) -> int:
+    async def take_locked_jobs(self) -> list[dict]:
+        """
+        Снимает все блокировки и возвращает задачи, которые их держали.
+        Блокировка есть только у выполняющейся задачи, поэтому после рестарта это и есть прерванные.
+        """
         conn = await self._connection()
         try:
-            cursor = await conn.execute("SELECT COUNT(*) AS c FROM user_locks")
-            row = await cursor.fetchone()
-            count = int(row["c"]) if row else 0
+            cursor = await conn.execute(
+                "SELECT jobs.* FROM user_locks JOIN jobs ON jobs.job_id = user_locks.job_id"
+            )
+            jobs = [dict(row) for row in await cursor.fetchall()]
+            await conn.execute(
+                "UPDATE jobs SET status = 'interrupted' "
+                "WHERE job_id IN (SELECT job_id FROM user_locks)"
+            )
             await conn.execute("DELETE FROM user_locks")
             await conn.commit()
-            return count
+            return jobs
         finally:
             await conn.close()
 

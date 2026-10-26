@@ -10,6 +10,7 @@ from aiogram import Bot
 from config.settings import settings
 from services.jobs.pipeline import run_analysis_pipeline, run_render_pipeline
 from services.storage.database import Database
+from services.video.cleanup import cleanup_job_dir
 from services.video.remote import RemoteVideoLink
 from services.video.validation import VideoValidationError
 
@@ -25,13 +26,49 @@ def create_job_dir() -> tuple[str, Path]:
     return job_id, job_dir
 
 
-async def clear_stale_locks() -> int:
-    """После рестарта контейнера задачи в памяти пропали — снимаем зависшие блокировки."""
+INTERRUPTED_TEXT = (
+    "⚠️ Сервер бота перезапустился, и обработка этого видео прервалась.\n\n"
+    "Отправьте видео или ссылку ещё раз."
+)
+
+
+async def clear_stale_locks() -> list[dict]:
+    """
+    После рестарта контейнера задачи в памяти пропали — снимаем зависшие блокировки.
+    Возвращает прерванные задачи, чтобы предупредить их владельцев.
+    """
     db = Database()
-    count = await db.clear_all_locks()
-    if count:
-        logger.warning("stale_locks_cleared", count=count)
-    return count
+    jobs = await db.take_locked_jobs()
+    if jobs:
+        logger.warning("stale_locks_cleared", count=len(jobs))
+    for job in jobs:
+        if job.get("job_dir"):
+            cleanup_job_dir(Path(job["job_dir"]))
+    return jobs
+
+
+async def notify_interrupted_jobs(bot: Bot, jobs: list[dict]) -> None:
+    """Заменяет застывший прогресс прерванной задачи на понятное сообщение."""
+    for job in jobs:
+        chat_id = job["chat_id"]
+        try:
+            if job.get("progress_message_id"):
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=job["progress_message_id"],
+                    text=INTERRUPTED_TEXT,
+                    reply_markup=None,
+                )
+            else:
+                await bot.send_message(chat_id, INTERRUPTED_TEXT)
+        except Exception as exc:
+            logger.warning("interrupted_notify_edit_failed", job_id=job["job_id"], error=str(exc))
+            try:
+                await bot.send_message(chat_id, INTERRUPTED_TEXT)
+            except Exception as send_exc:
+                logger.warning("interrupted_notify_failed", job_id=job["job_id"], error=str(send_exc))
+                continue
+        logger.info("interrupted_job_notified", job_id=job["job_id"], status=job.get("status"))
 
 
 async def cancel_user_job(user_id: int) -> tuple[bool, str | None]:

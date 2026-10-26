@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import wave
+from collections.abc import Iterator
 from pathlib import Path
 
+import numpy as np
 import structlog
 from faster_whisper import WhisperModel
 
@@ -18,6 +21,8 @@ logger = structlog.get_logger(__name__)
 _model: WhisperModel | None = None
 _model_name: str | None = None
 _model_lock = threading.Lock()
+
+_SAMPLE_RATE = 16000
 
 
 def _cpu_threads() -> int:
@@ -50,29 +55,72 @@ def _load_model(model_name: str) -> WhisperModel:
         return _model
 
 
+def _iter_audio_chunks(audio_path: Path, chunk_sec: int) -> Iterator[tuple[float, np.ndarray | str]]:
+    """
+    Отдаёт аудио кусками (offset_sec, samples), чтобы память не росла с длиной видео.
+    faster-whisper иначе грузит весь файл и строит спектрограмму целиком — на 25+ мин это OOM.
+    """
+    try:
+        wav = wave.open(str(audio_path), "rb")
+    except (wave.Error, EOFError) as exc:
+        logger.warning("whisper_chunking_unavailable", error=str(exc))
+        yield 0.0, str(audio_path)
+        return
+
+    with wav:
+        if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, _SAMPLE_RATE):
+            logger.warning(
+                "whisper_chunking_unsupported_format",
+                channels=wav.getnchannels(),
+                sample_width=wav.getsampwidth(),
+                rate=wav.getframerate(),
+            )
+            yield 0.0, str(audio_path)
+            return
+
+        frames_per_chunk = chunk_sec * _SAMPLE_RATE
+        offset = 0.0
+        while True:
+            raw = wav.readframes(frames_per_chunk)
+            if not raw:
+                break
+            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            yield offset, samples
+            offset += len(samples) / _SAMPLE_RATE
+
+
 def _transcribe_sync(audio_path: Path, *, duration_sec: float) -> list[TranscriptSegment]:
     model_name = whisper_model_for_duration(duration_sec)
     beam_size = whisper_beam_size_for_duration(duration_sec)
     model = _load_model(model_name)
     language = settings.whisper_language.strip() or None
-    segments_iter, info = model.transcribe(
-        str(audio_path),
-        language=language,
-        beam_size=beam_size,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 400},
-    )
+    chunk_sec = max(60, settings.whisper_chunk_sec)
     segments: list[TranscriptSegment] = []
-    for item in segments_iter:
-        text = normalize_speech_text(item.text)
-        if not text:
-            continue
-        segments.append(
-            TranscriptSegment(
-                start=round(item.start, 2),
-                end=round(item.end, 2),
-                text=text,
+    info = None
+    for chunk_idx, (offset, audio) in enumerate(_iter_audio_chunks(audio_path, chunk_sec)):
+        segments_iter, info = model.transcribe(
+            audio,
+            language=language,
+            beam_size=beam_size,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 400},
+        )
+        for item in segments_iter:
+            text = normalize_speech_text(item.text)
+            if not text:
+                continue
+            segments.append(
+                TranscriptSegment(
+                    start=round(item.start + offset, 2),
+                    end=round(item.end + offset, 2),
+                    text=text,
+                )
             )
+        logger.info(
+            "whisper_chunk_done",
+            chunk=chunk_idx + 1,
+            offset_sec=round(offset, 1),
+            segments_total=len(segments),
         )
     logger.info(
         "whisper_done",
@@ -81,6 +129,7 @@ def _transcribe_sync(audio_path: Path, *, duration_sec: float) -> list[Transcrip
         language=getattr(info, "language", None),
         model=model_name,
         beam_size=beam_size,
+        chunk_sec=chunk_sec,
         duration_sec=round(duration_sec, 1),
     )
     return segments

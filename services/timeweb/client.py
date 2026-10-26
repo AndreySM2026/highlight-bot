@@ -25,7 +25,8 @@ class TimewebClient:
         payload = {"message": message}
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=120) as resp:
+            # Вся расшифровка часового выпуска — это десятки тысяч токенов, 120 с бывает мало
+            async with session.post(url, json=payload, headers=headers, timeout=300) as resp:
                 body = await resp.text()
                 if resp.status != 200:
                     logger.error("timeweb_api_error", status=resp.status, body=body[:500])

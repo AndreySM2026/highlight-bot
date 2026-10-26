@@ -54,8 +54,8 @@ async def _run_stage_with_heartbeat(
     task = asyncio.create_task(coro)
     tick = 0
     while not task.done():
-        _, pending = await asyncio.wait({task}, timeout=20)
-        if not pending:
+        done, _ = await asyncio.wait({task}, timeout=20)
+        if not done:
             tick += 1
             ratio = ratio_start + (ratio_end - ratio_start) * min(0.95, tick * 0.08)
             await _update_progress(
@@ -193,7 +193,16 @@ async def run_analysis_pipeline(
         audio_path.unlink(missing_ok=True)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "analyzing", 0.5, "Поиск хайлайтов")
-    highlights: HighlightResult = await detect_highlights(activity_map, video_context)
+    highlights: HighlightResult = await _run_stage_with_heartbeat(
+        detect_highlights(activity_map, video_context),
+        bot,
+        chat_id,
+        progress_message_id,
+        job_id,
+        "analyzing",
+        "Поиск хайлайтов",
+        ratio_start=0.5,
+    )
     await _update_progress(bot, chat_id, progress_message_id, job_id, "analyzing", 1.0, "Поиск хайлайтов")
 
     if not highlights.segments:

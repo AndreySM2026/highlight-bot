@@ -36,9 +36,11 @@ async def activate_bot_task(app: web.Application) -> None:
     """Не блокирует on_startup; бот активируется только если configure_app успешен."""
     from services.jobs.manager import clear_stale_locks
 
-    cleared = await clear_stale_locks()
-    if cleared:
-        print(f"=== Cleared {cleared} stale user lock(s) after restart ===", flush=True)
+    interrupted = await clear_stale_locks()
+    if interrupted:
+        print(f"=== Cleared {len(interrupted)} stale user lock(s) after restart ===", flush=True)
+        # Пользователей предупредим, когда бот подключится к Telegram (bootstrap.activate_bot)
+        app["interrupted_jobs"] = interrupted
 
     if not app.get("bot"):
         print("WARNING: bot not configured, skip activation", flush=True)

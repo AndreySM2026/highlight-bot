@@ -57,6 +57,13 @@ def snap_segment_to_blocks(
     if not blocks:
         return segment
 
+    # Отрезок уже выровнен по границам фраз (так возвращает ИИ) — не трогаем,
+    # иначе мысль из нескольких фраз схлопнется до одной самой длинной.
+    starts_on_block = any(abs(b.start - segment.start_time) <= 0.05 for b in blocks)
+    ends_on_block = any(abs(b.end - segment.end_time) <= 0.05 for b in blocks)
+    if starts_on_block and ends_on_block:
+        return segment
+
     best_single: SpeechBlock | None = None
     best_overlap = 0.0
     for block in blocks:

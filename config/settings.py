@@ -102,8 +102,10 @@ class Settings(BaseSettings):
     )
     max_clips: int = 10
     max_videos_per_day: int = 10
-    min_clip_sec: int = 8
+    min_clip_sec: int = 15
     max_clip_sec: int = 90
+    clip_pad_start_sec: float = Field(default=0.15, description="Запас до первого слова клипа, сек")
+    clip_pad_end_sec: float = Field(default=0.4, description="Запас после последнего слова клипа, сек")
 
     target_width: int = 1080
     target_height: int = 1920
@@ -121,9 +123,9 @@ class Settings(BaseSettings):
         default=1800,
         description="Не сканировать смены сцен на видео длиннее (экономит минуты на 30–60 мин роликах)",
     )
-    highlight_prompt_max_blocks: int = Field(
-        default=50,
-        description="Макс. speech_blocks в промпте LLM для длинных видео",
+    highlight_prompt_max_chars: int = Field(
+        default=120_000,
+        description="Макс. размер расшифровки в промпте LLM, символов (≈ 60 мин речи)",
     )
     analysis_max_height: int = Field(
         default=720,
@@ -146,6 +148,10 @@ class Settings(BaseSettings):
     whisper_cpu_threads: int = Field(
         default=0,
         description="Потоки CPU для Whisper, 0 = все ядра",
+    )
+    whisper_chunk_sec: int = Field(
+        default=300,
+        description="Длина куска аудио для Whisper, сек — ограничивает пик памяти на длинных видео",
     )
     whisper_language: str = Field(
         default="ru",
@@ -175,16 +181,22 @@ class Settings(BaseSettings):
         default=True,
         description="Разрешить вшитые русские субтитры (выбор кнопкой при рендере)",
     )
-    subtitles_font_size: int = Field(default=52, description="Размер шрифта субтитров")
-    subtitles_max_chars_per_line: int = Field(default=34, description="Символов в строке субтитра")
+    subtitles_font_size: int = Field(default=60, description="Размер шрифта субтитров")
+    subtitles_max_chars_per_line: int = Field(
+        default=24,
+        description="Символов в строке субтитра (24 × 60px ≈ 860px — не залезает под кнопки справа)",
+    )
     subtitles_max_lines: int = Field(default=2, description="Макс. строк субтитра")
     subtitles_alignment: int = Field(
-        default=5,
+        default=2,
         description="ASS Alignment: 2 — низ по центру, 5 — середина по центру",
     )
     subtitles_margin_v: int = Field(
-        default=80,
-        description="ASS MarginV: отступ от низа (2) или от центра (5), пиксели",
+        default=440,
+        description=(
+            "ASS MarginV: отступ от низа (2) или от центра (5), пиксели кадра 1080×1920. "
+            "440 — нижняя треть, над подписью и кнопками TikTok/Shorts/VK Клипов"
+        ),
     )
 
     @field_validator("subtitles_enabled", mode="before")

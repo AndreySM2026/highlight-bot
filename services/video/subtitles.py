@@ -24,7 +24,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,{settings.subtitles_font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,3,1,{settings.subtitles_alignment},48,48,{settings.subtitles_margin_v},1
+Style: Default,DejaVu Sans,{settings.subtitles_font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,5,2,{settings.subtitles_alignment},60,60,{settings.subtitles_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -64,7 +64,14 @@ def _escape_ass_line(text: str) -> str:
     )
 
 
-def wrap_subtitle_lines(text: str, *, max_chars: int | None = None) -> list[str]:
+def wrap_subtitle_pages(text: str, *, max_chars: int | None = None) -> list[list[str]]:
+    """Разбивает фразу на «страницы» по max_lines строк — без потери слов."""
+    lines = _wrap_all_lines(text, max_chars=max_chars)
+    per_page = max(1, settings.subtitles_max_lines)
+    return [lines[i : i + per_page] for i in range(0, len(lines), per_page)]
+
+
+def _wrap_all_lines(text: str, *, max_chars: int | None = None) -> list[str]:
     text = normalize_speech_text(text)
     limit = max_chars or settings.subtitles_max_chars_per_line
     if not text:
@@ -85,7 +92,7 @@ def wrap_subtitle_lines(text: str, *, max_chars: int | None = None) -> list[str]
             length += extra
     if current:
         lines.append(" ".join(current))
-    return lines[: settings.subtitles_max_lines]
+    return lines
 
 
 def _format_ass_text(lines: list[str]) -> str:
@@ -109,15 +116,22 @@ def build_ass_for_clip(
         rel_end = min(clip_duration, seg.end - clip_start)
         if rel_end - rel_start < 0.25:
             continue
-        lines = wrap_subtitle_lines(seg.text)
-        if not lines:
+        pages = wrap_subtitle_pages(seg.text)
+        if not pages:
             continue
-        dialogues.append(
-            "Dialogue: 0,"
-            f"{_ass_timestamp(rel_start)},"
-            f"{_ass_timestamp(rel_end)},"
-            f"Default,,0,0,0,,{_format_ass_text(lines)}"
-        )
+        # Длинная фраза идёт несколькими экранами подряд; время делим пропорционально числу символов
+        total_chars = sum(len(" ".join(page)) for page in pages)
+        page_start = rel_start
+        for page in pages:
+            share = len(" ".join(page)) / total_chars if total_chars else 1 / len(pages)
+            page_end = min(rel_end, page_start + (rel_end - rel_start) * share)
+            dialogues.append(
+                "Dialogue: 0,"
+                f"{_ass_timestamp(page_start)},"
+                f"{_ass_timestamp(page_end)},"
+                f"Default,,0,0,0,,{_format_ass_text(page)}"
+            )
+            page_start = page_end
 
     if not dialogues:
         return False

@@ -141,6 +141,14 @@ async def _try_activate_once(bot: Bot) -> bool:
     return False
 
 
+async def _notify_interrupted(app: web.Application, bot: Bot) -> None:
+    from services.jobs.manager import notify_interrupted_jobs
+
+    jobs = app.pop("interrupted_jobs", None)
+    if jobs:
+        await notify_interrupted_jobs(bot, jobs)
+
+
 async def activate_bot(app: web.Application) -> None:
     """get_me + set_webhook после старта сервера (с retry)."""
     bot: Bot | None = app.get("bot")
@@ -156,6 +164,7 @@ async def activate_bot(app: web.Application) -> None:
     ok = await _try_activate_once(bot)
     app["telegram_ready"] = ok
     if ok:
+        await _notify_interrupted(app, bot)
         return
 
     print(
@@ -179,4 +188,5 @@ async def activate_bot_loop(app: web.Application) -> None:
         if await _try_activate_once(bot):
             app["telegram_ready"] = True
             print("=== Bot activation done ===", flush=True)
+            await _notify_interrupted(app, bot)
             return

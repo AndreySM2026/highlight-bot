@@ -23,6 +23,16 @@ def _clamp_duration(segment: HighlightSegment, blocks: list[SpeechBlock]) -> Hig
     return segment
 
 
+def _pad_edges(segment: HighlightSegment, duration_sec: float) -> HighlightSegment:
+    """Метки Whisper режут первый/последний слог — добавляем немного воздуха по краям."""
+    return segment.model_copy(
+        update={
+            "start_time": round(max(0.0, segment.start_time - settings.clip_pad_start_sec), 2),
+            "end_time": round(min(duration_sec, segment.end_time + settings.clip_pad_end_sec), 2),
+        }
+    )
+
+
 def _overlaps(a: HighlightSegment, b: HighlightSegment) -> bool:
     return a.start_time < b.end_time and b.start_time < a.end_time
 
@@ -50,6 +60,7 @@ def normalize_segments(
             break
 
     cleaned.sort(key=lambda s: s.start_time)
+    cleaned = [_pad_edges(seg, duration_sec) for seg in cleaned]
 
     recommended = min(max(result.recommended_clip_count, 1), len(cleaned) or 1)
     recommended = min(recommended, settings.max_clips)
