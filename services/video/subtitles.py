@@ -11,6 +11,7 @@ from services.highlights.utterances import normalize_speech_text
 from services.highlights.schemas import HighlightSegment, TranscriptSegment
 from services.video.aspect import TARGET_HEIGHT, TARGET_WIDTH
 from services.video.ffmpeg import run_ffmpeg
+from services.video.reframe import load_split_ranges
 
 logger = structlog.get_logger(__name__)
 
@@ -25,6 +26,7 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,DejaVu Sans,{settings.subtitles_font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,5,2,{settings.subtitles_alignment},60,60,{settings.subtitles_margin_v},1
+Style: Seam,DejaVu Sans,{settings.subtitles_font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,5,2,5,60,60,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -105,9 +107,16 @@ def build_ass_for_clip(
     clip_start: float,
     clip_end: float,
     output_path: Path,
+    split_ranges: list[tuple[float, float]] | None = None,
 ) -> bool:
     clip_duration = max(0.1, clip_end - clip_start)
     dialogues: list[str] = []
+    split_ranges = split_ranges or []
+
+    def style_for(start: float, end: float) -> str:
+        # На разделённом экране внизу лицо второго спикера — текст ставим на шов посередине
+        mid = (start + end) / 2
+        return "Seam" if any(a <= mid < b for a, b in split_ranges) else "Default"
 
     for seg in transcript:
         if seg.end <= clip_start or seg.start >= clip_end:
@@ -129,7 +138,7 @@ def build_ass_for_clip(
                 "Dialogue: 0,"
                 f"{_ass_timestamp(page_start)},"
                 f"{_ass_timestamp(page_end)},"
-                f"Default,,0,0,0,,{_format_ass_text(page)}"
+                f"{style_for(page_start, page_end)},,0,0,0,,{_format_ass_text(page)}"
             )
             page_start = page_end
 
@@ -190,6 +199,7 @@ async def apply_subtitles_to_clip(
             clip_start=segment.start_time,
             clip_end=segment.end_time,
             output_path=ass_path,
+            split_ranges=load_split_ranges(video_path),
         ):
             logger.warning("subtitles_skipped_empty", path=str(video_path))
             return video_path

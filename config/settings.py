@@ -163,6 +163,26 @@ class Settings(BaseSettings):
         description="Тип вычислений CPU: int8, float32; для GPU: float16",
     )
 
+    split_screen_enabled: bool = Field(
+        default=True,
+        description=(
+            "Кадрирование по монтажным планам (YuNet) и разделённый экран "
+            "(левый спикер сверху, правый снизу) на планах с двумя людьми"
+        ),
+    )
+    split_min_distance_ratio: float = Field(
+        default=0.28,
+        description="Мин. расстояние между лицами (доля ширины кадра), чтобы включить разделённый экран",
+    )
+    split_face_zoom: float = Field(
+        default=3.2,
+        description="Высота окна половинки = высота лица × это число (меньше — крупнее лицо)",
+    )
+    reframe_scene_threshold: float = Field(
+        default=0.3,
+        description="Порог смены плана для ffmpeg select=scene (0–1)",
+    )
+
     face_crop_enabled: bool = Field(
         default=True,
         description="Центрировать 9:16 crop по лицу (OpenCV)",

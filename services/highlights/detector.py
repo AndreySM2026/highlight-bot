@@ -14,6 +14,8 @@ from services.timeweb.prompts.highlight_detection import build_highlight_prompt
 
 logger = structlog.get_logger(__name__)
 
+AI_ATTEMPTS = 2
+
 
 def _block_range(item: dict) -> tuple[int, int] | None:
     """Диапазон фраз отрывка: start_block/end_block или (старый формат) список block_ids."""
@@ -83,24 +85,38 @@ async def detect_highlights(
     client = TimewebClient()
     prompt = build_highlight_prompt(activity_map, context)
 
-    try:
-        response = await client.call_agent(prompt)
-        data = extract_json(response)
-        result = _parse_highlight_response(data, activity_map)
-        result = finalize_highlight_result(result, activity_map)
-        if result.segments:
-            logger.info(
-                "highlights_detected",
-                source="qwen",
-                count=len(result.segments),
-                video_theme=result.video_theme[:120] if result.video_theme else None,
+    # Разовые сбои (ошибка API, обрезанный JSON, таймаут) не должны сразу отправлять в эвристику
+    for attempt in range(1, AI_ATTEMPTS + 1):
+        try:
+            response = await client.call_agent(prompt)
+            data = extract_json(response)
+            raw = _parse_highlight_response(data, activity_map)
+            result = finalize_highlight_result(raw, activity_map)
+            if result.segments:
+                logger.info(
+                    "highlights_detected",
+                    source="qwen",
+                    attempt=attempt,
+                    count=len(result.segments),
+                    video_theme=result.video_theme[:120] if result.video_theme else None,
+                )
+                return result
+            logger.warning(
+                "highlights_empty_qwen_response",
+                attempt=attempt,
+                raw_segments=len(data.get("segments", []) or []),
+                parsed_segments=len(raw.segments),
+                response_head=response[:300],
             )
-            return result
-        logger.warning("highlights_empty_qwen_response")
-    except TimewebError as exc:
-        logger.warning("highlights_qwen_failed", error=str(exc))
-    except Exception as exc:
-        logger.warning("highlights_qwen_unexpected_error", error=str(exc))
+        except TimewebError as exc:
+            logger.warning("highlights_qwen_failed", attempt=attempt, error=str(exc)[:500])
+        except Exception as exc:
+            logger.warning(
+                "highlights_qwen_unexpected_error",
+                attempt=attempt,
+                error_type=type(exc).__name__,
+                error=str(exc)[:500],
+            )
 
     speech = detect_from_speech_blocks(activity_map, context)
     speech = finalize_highlight_result(speech, activity_map)

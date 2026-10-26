@@ -5,6 +5,7 @@ from pathlib import Path
 
 import structlog
 
+from config.settings import settings
 from services.highlights.schemas import HighlightSegment
 from services.video.aspect import (
     TARGET_HEIGHT,
@@ -19,6 +20,7 @@ from services.video.face_crop import (
     reframe_min_scale,
 )
 from services.video.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
+from services.video.reframe import ReframePlan, build_reframe_filter, layout_path_for, plan_reframe
 
 logger = structlog.get_logger(__name__)
 
@@ -48,7 +50,7 @@ async def _assert_output_dimensions(path: Path) -> None:
         logger.warning("render_clip_non_square_sar", path=str(path), sar=sar)
 
 
-def _encode_args(*, video_filter: str | None) -> list[str]:
+def _encode_args(*, video_filter: str | None, filter_complex: str | None = None) -> list[str]:
     args = [
         "-c:v",
         "libx264",
@@ -69,9 +71,39 @@ def _encode_args(*, video_filter: str | None) -> list[str]:
         "-map_metadata",
         "-1",
     ]
-    if video_filter:
+    if filter_complex:
+        args = ["-filter_complex", filter_complex, "-map", "[v]", "-map", "0:a?", *args]
+    elif video_filter:
         args = ["-vf", video_filter, *args]
     return args
+
+
+async def _build_reframe_graph(
+    input_path: Path,
+    segment: HighlightSegment,
+    display,
+) -> tuple[str, ReframePlan] | None:
+    """
+    Кадрирование по планам (YuNet): кадр следует за лицом на каждом плане,
+    на планах с двумя спикерами — разделённый экран. None — использовать обычный crop.
+    """
+    if not settings.split_screen_enabled:
+        return None
+    # Только горизонтальные/квадратные исходники с квадратными пикселями
+    if display.aspect <= TARGET_WIDTH / TARGET_HEIGHT * 1.05 or abs(display.sar - 1.0) > 0.01:
+        return None
+    try:
+        plan = await plan_reframe(
+            input_path,
+            start=segment.start_time,
+            duration=max(0.1, segment.end_time - segment.start_time),
+            display=display,
+            work_dir=input_path.parent,
+        )
+        return build_reframe_filter(plan, display), plan
+    except Exception as exc:
+        logger.warning("reframe_failed_fallback_crop", error=str(exc))
+        return None
 
 
 async def _build_crop_filter(
@@ -124,17 +156,20 @@ async def render_clip(
     geometry: dict | None = None,
 ) -> Path:
     display = await get_display_geometry(input_path)
-    crop_filter = await _build_crop_filter(input_path, segment, display)
-    passthrough = crop_filter is None
+    reframe = await _build_reframe_graph(input_path, segment, display)
+    crop_filter = None if reframe else await _build_crop_filter(input_path, segment, display)
+    filter_complex = reframe[0] if reframe else None
+    passthrough = crop_filter is None and filter_complex is None
     clip_duration = max(0.1, segment.end_time - segment.start_time)
     logger.info(
         "render_clip_start",
         input=str(input_path),
         passthrough=passthrough,
+        split_screen=bool(reframe),
         display_width=round(display.display_width, 1),
         display_height=round(display.display_height, 1),
         rotation=display.rotation,
-        filter=crop_filter,
+        filter=filter_complex or crop_filter,
         start=segment.start_time,
         end=segment.end_time,
         duration=round(clip_duration, 2),
@@ -149,14 +184,17 @@ async def render_clip(
             str(clip_duration),
             "-threads",
             _ffmpeg_threads(),
-            *_encode_args(video_filter=crop_filter),
+            *_encode_args(video_filter=crop_filter, filter_complex=filter_complex),
             str(output_path),
         ],
         label="render_clip",
         timeout=_render_timeout(clip_duration),
     )
     await _assert_output_dimensions(output_path)
-    return await compress_for_telegram(output_path)
+    final_path = await compress_for_telegram(output_path)
+    if reframe:
+        reframe[1].save(layout_path_for(final_path))
+    return final_path
 
 
 async def compress_for_telegram(path: Path, max_bytes: int = 49 * 1024 * 1024) -> Path:
