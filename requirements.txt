@@ -6,4 +6,6 @@ pydantic>=2.9,<3.0
 pydantic-settings>=2.5,<3.0
 structlog>=24.4,<25.0
 faster-whisper>=1.1.0,<2.0
+# PyAV 19 убрал av.open(metadata_errors=...), который вызывает faster-whisper
+av>=11,<19
 opencv-python-headless>=4.10.0,<5.0
