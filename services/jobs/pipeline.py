@@ -127,7 +127,7 @@ async def run_analysis_pipeline(
 
     video_context = VideoContext()
     download_label = f"Скачивание с {video_link.label}" if video_link else "Скачивание"
-    await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 0.2, download_label)
+    await _update_progress(bot, chat_id, progress_message_id, job_id, "downloading", 0.0, download_label)
     input_path = job_dir / "input.mp4"
     if video_link:
         try:
@@ -138,7 +138,15 @@ async def run_analysis_pipeline(
             )
         except Exception as exc:
             logger.warning("remote_metadata_failed", platform=video_link.platform, error=str(exc))
-        await download_remote_video(video_link.url, input_path, platform=video_link.label)
+
+        async def on_download_progress(ratio: float, detail: str) -> None:
+            await _update_progress(
+                bot, chat_id, progress_message_id, job_id, "downloading", ratio, f"{download_label} · {detail}"
+            )
+
+        await download_remote_video(
+            video_link.url, input_path, platform=video_link.label, on_progress=on_download_progress
+        )
     else:
         await download_telegram_file(bot, file_id, input_path)
 

@@ -178,6 +178,17 @@ class Settings(BaseSettings):
         default=3.2,
         description="Высота окна половинки = высота лица × это число (меньше — крупнее лицо)",
     )
+    plate_zoom_enabled: bool = Field(
+        default=False,
+        description=(
+            "Приближать кадр на планах, где видна плашка с именем гостя, чтобы она не попадала обрезанной. "
+            "Выключено: на крупных планах наезд ×1.3 слишком тесный, лицо уходит к краю при повороте головы"
+        ),
+    )
+    plate_min_text_rows: int = Field(
+        default=25,
+        description="Сколько строк «текста» внизу слева считать плашкой (на MEDIA MIX 69: 109–128 с плашкой, 0–3 без)",
+    )
     reframe_scene_threshold: float = Field(
         default=0.3,
         description="Порог смены плана для ffmpeg select=scene (0–1)",

@@ -67,10 +67,48 @@ def _escape_ass_line(text: str) -> str:
 
 
 def wrap_subtitle_pages(text: str, *, max_chars: int | None = None) -> list[list[str]]:
-    """Разбивает фразу на «страницы» по max_lines строк — без потери слов."""
+    """
+    Разбивает фразу на «страницы» по max_lines строк — без потери слов.
+    Слова распределяются по страницам поровну, чтобы последняя не оказалась одним словом.
+    """
     lines = _wrap_all_lines(text, max_chars=max_chars)
     per_page = max(1, settings.subtitles_max_lines)
-    return [lines[i : i + per_page] for i in range(0, len(lines), per_page)]
+    greedy = [lines[i : i + per_page] for i in range(0, len(lines), per_page)]
+    if len(greedy) < 2:
+        return greedy
+
+    words = normalize_speech_text(text).split()
+    target = len(" ".join(words)) / len(greedy)
+    balanced: list[list[str]] = []
+    current: list[str] = []
+    for word in words:
+        current.append(word)
+        pages_left = len(greedy) - len(balanced) - 1
+        if pages_left > 0 and len(" ".join(current)) >= target:
+            balanced.append(_wrap_all_lines(" ".join(current), max_chars=max_chars))
+            current = []
+    if current:
+        balanced.append(_wrap_all_lines(" ".join(current), max_chars=max_chars))
+    if any(len(page) > per_page for page in balanced):
+        return greedy  # ровно поделить не вышло — оставляем как было, слова не теряем
+    return balanced
+
+
+def _merge_tiny_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+    """Whisper иногда отдаёт отдельный сегмент из одного слова («пользу.») — клеим к предыдущему."""
+    merged: list[TranscriptSegment] = []
+    for seg in segments:
+        words = seg.text.split()
+        if (
+            merged
+            and (len(words) <= 1 or len(seg.text) < 8)
+            and seg.start - merged[-1].end <= 0.6
+        ):
+            prev = merged[-1]
+            merged[-1] = prev.model_copy(update={"end": seg.end, "text": f"{prev.text} {seg.text}"})
+            continue
+        merged.append(seg)
+    return merged
 
 
 def _wrap_all_lines(text: str, *, max_chars: int | None = None) -> list[str]:
@@ -125,9 +163,8 @@ def build_ass_for_clip(
         cuts = [start, *(e for e in edges if start < e < end), end]
         return [(a, b) for a, b in zip(cuts, cuts[1:]) if b - a >= 0.05]
 
-    for seg in transcript:
-        if seg.end <= clip_start or seg.start >= clip_end:
-            continue
+    in_clip = [s for s in transcript if s.end > clip_start and s.start < clip_end]
+    for seg in _merge_tiny_segments(sorted(in_clip, key=lambda s: s.start)):
         rel_start = max(0.0, seg.start - clip_start)
         rel_end = min(clip_duration, seg.end - clip_start)
         if rel_end - rel_start < 0.25:

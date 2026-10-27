@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+# Доли шкалы ≈ реальной длительности этапов на 25-минутном выпуске:
+# скачивание ~4 мин, расшифровка ~4 мин, выбор и проверка ИИ ~2–3 мин
 PROGRESS_STAGES = {
-    "downloading": (0, 10),
-    "normalizing": (10, 25),
-    "metadata": (25, 40),
-    "transcribing": (40, 55),
-    "analyzing": (55, 70),
+    "downloading": (0, 30),
+    "normalizing": (30, 33),
+    "metadata": (33, 40),
+    "transcribing": (40, 60),
+    "analyzing": (60, 70),
     "waiting_choice": (70, 70),
     "rendering": (70, 95),
     "sending": (95, 100),
