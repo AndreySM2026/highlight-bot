@@ -9,6 +9,7 @@ from aiogram import Bot
 
 from config.settings import settings
 from services.jobs.pipeline import run_analysis_pipeline, run_render_pipeline
+from services.jobs.queue import JOB_QUEUE, PositionCallback
 from services.storage.database import Database
 from services.video.cleanup import cleanup_job_dir
 from services.video.remote import RemoteVideoLink
@@ -71,33 +72,54 @@ async def notify_interrupted_jobs(bot: Bot, jobs: list[dict]) -> None:
         logger.info("interrupted_job_notified", job_id=job["job_id"], status=job.get("status"))
 
 
-async def cancel_user_job(user_id: int) -> tuple[bool, str | None]:
-    """
-    Отменяет фоновую задачу и снимает блокировку.
-    Возвращает (была_ли_блокировка, job_id).
-    """
+async def cancel_user_jobs(user_id: int) -> int:
+    """Отменяет все задания пользователя (идущие и ждущие в очереди). Возвращает их число."""
     db = Database()
-    job_id = await db.get_locked_job_id(user_id)
-    was_locked = job_id is not None
+    job_ids = await db.get_active_job_ids(user_id)
 
-    if job_id and job_id in _active_tasks:
-        task = _active_tasks[job_id]
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            logger.info("job_cancelled", job_id=job_id, user_id=user_id)
-        except Exception as exc:
-            logger.warning("job_cancel_wait_failed", job_id=job_id, error=str(exc))
-
-    await db.unlock_user(user_id)
-
-    if job_id:
+    for job_id in job_ids:
+        task = _active_tasks.get(job_id)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.info("job_cancelled", job_id=job_id, user_id=user_id)
+            except Exception as exc:
+                logger.warning("job_cancel_wait_failed", job_id=job_id, error=str(exc))
+        await db.unlock_job(job_id)
         job = await db.get_job(job_id)
-        if job and job.get("status") in {"rendering", "downloading", "normalizing", "transcribing", "analyzing", "metadata"}:
+        if job and job.get("status") == "rendering":
             await db.update_job(job_id, status="waiting_choice", progress=70)
 
-    return was_locked, job_id
+    return len(job_ids)
+
+
+async def check_user_slots(user_id: int) -> str | None:
+    """Текст отказа, если пользователь уже отправил максимум видео; None — можно."""
+    db = Database()
+    active = await db.count_active_jobs(user_id)
+    if active >= settings.max_jobs_per_user:
+        return (
+            f"⏳ У вас уже в работе {active} видео — это максимум. "
+            "Дождитесь, пока одно закончится, или отправьте /cancel."
+        )
+    return None
+
+
+def _queue_notifier(bot: Bot, chat_id: int, message_id: int) -> PositionCallback:
+    async def notify(position: int) -> None:
+        ahead = position + JOB_QUEUE.running - 1
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=(
+                f"⏳ Видео в очереди: перед ним {ahead} в обработке или ожидании.\n"
+                "Начну автоматически, как только освободится место — ничего нажимать не нужно."
+            ),
+        )
+
+    return notify
 
 
 async def start_analysis_job(
@@ -114,11 +136,12 @@ async def start_analysis_job(
         raise ValueError("Укажите file_id или video_link")
 
     db = Database()
-    if await db.has_active_job(user_id):
-        raise RuntimeError("У вас уже идёт обработка другого видео.")
+    refusal = await check_user_slots(user_id)
+    if refusal:
+        raise RuntimeError(refusal)
 
     job_id, job_dir = create_job_dir()
-    await db.lock_user(user_id, job_id)
+    await db.lock_job(user_id, job_id)
     await db.create_job(
         job_id,
         user_id,
@@ -154,13 +177,13 @@ async def start_render_job(
     progress_message_id: int,
     with_subtitles: bool = False,
 ) -> None:
-    if job_id in _active_tasks:
-        raise RuntimeError("Задача уже выполняется.")
-
     db = Database()
-    if await db.has_active_job(user_id):
-        raise RuntimeError("У вас уже идёт обработка.")
-    await db.lock_user(user_id, job_id)
+    if job_id in _active_tasks or await db.is_job_active(job_id):
+        raise RuntimeError("Это видео уже нарезается.")
+    refusal = await check_user_slots(user_id)
+    if refusal:
+        raise RuntimeError(refusal)
+    await db.lock_job(user_id, job_id)
 
     task = asyncio.create_task(
         _run_render_wrapper(
@@ -184,17 +207,20 @@ async def _run_analysis_wrapper(
 ) -> None:
     db = Database()
     error_text: str | None = None
+    job = await db.get_job(job_id)
+    on_wait = _queue_notifier(bot, chat_id, job["progress_message_id"]) if job else None
     try:
-        await run_analysis_pipeline(
-            bot,
-            job_id=job_id,
-            user_id=user_id,
-            chat_id=chat_id,
-            job_dir=job_dir,
-            file_id=file_id,
-            video_link=video_link,
-            mime_type=mime_type,
-        )
+        async with JOB_QUEUE.slot(job_id, on_wait):
+            await run_analysis_pipeline(
+                bot,
+                job_id=job_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                job_dir=job_dir,
+                file_id=file_id,
+                video_link=video_link,
+                mime_type=mime_type,
+            )
     except asyncio.CancelledError:
         logger.info("analysis_job_cancelled", job_id=job_id)
         try:
@@ -217,7 +243,7 @@ async def _run_analysis_wrapper(
     else:
         return
     finally:
-        await db.unlock_user(user_id)
+        await db.unlock_job(job_id)
 
     if error_text:
         job = await db.get_job(job_id)
@@ -245,15 +271,16 @@ async def _run_render_wrapper(
 ) -> None:
     db = Database()
     try:
-        await run_render_pipeline(
-            bot,
-            job_id=job_id,
-            user_id=user_id,
-            chat_id=chat_id,
-            clip_count=clip_count,
-            progress_message_id=progress_message_id,
-            with_subtitles=with_subtitles,
-        )
+        async with JOB_QUEUE.slot(job_id, _queue_notifier(bot, chat_id, progress_message_id)):
+            await run_render_pipeline(
+                bot,
+                job_id=job_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                clip_count=clip_count,
+                progress_message_id=progress_message_id,
+                with_subtitles=with_subtitles,
+            )
     except asyncio.CancelledError:
         logger.info("render_job_cancelled", job_id=job_id)
         await db.update_job(job_id, status="waiting_choice", progress=70)
@@ -273,4 +300,4 @@ async def _run_render_wrapper(
         except Exception:
             pass
     finally:
-        await db.unlock_user(user_id)
+        await db.unlock_job(job_id)

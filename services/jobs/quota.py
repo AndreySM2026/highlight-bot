@@ -12,6 +12,6 @@ async def check_daily_quota(user_id: int) -> str | None:
             f"⚠️ Лимит на сегодня исчерпан ({settings.max_videos_per_day} видео).\n"
             "Попробуйте завтра."
         )
-    if await db.has_active_job(user_id):
-        return "⏳ У вас уже идёт обработка. Дождитесь завершения."
-    return None
+    from services.jobs.manager import check_user_slots
+
+    return await check_user_slots(user_id)

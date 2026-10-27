@@ -21,6 +21,9 @@ logger = structlog.get_logger(__name__)
 _model: WhisperModel | None = None
 _model_name: str | None = None
 _model_lock = threading.Lock()
+# Два задания из очереди могут дойти до расшифровки одновременно: модель одна, ядер 4 —
+# параллельно быстрее не будет, а память удвоится. Расшифровываем строго по одному.
+_transcribe_lock = threading.Lock()
 
 _SAMPLE_RATE = 16000
 
@@ -90,6 +93,11 @@ def _iter_audio_chunks(audio_path: Path, chunk_sec: int) -> Iterator[tuple[float
 
 
 def _transcribe_sync(audio_path: Path, *, duration_sec: float) -> list[TranscriptSegment]:
+    with _transcribe_lock:
+        return _transcribe_locked(audio_path, duration_sec=duration_sec)
+
+
+def _transcribe_locked(audio_path: Path, *, duration_sec: float) -> list[TranscriptSegment]:
     model_name = whisper_model_for_duration(duration_sec)
     beam_size = whisper_beam_size_for_duration(duration_sec)
     model = _load_model(model_name)

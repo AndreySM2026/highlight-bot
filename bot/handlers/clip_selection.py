@@ -47,8 +47,8 @@ async def handle_clip_selection(callback: CallbackQuery, state: FSMContext) -> N
         await callback.answer("Задача уже обработана или устарела.", show_alert=True)
         return
 
-    if await db.has_active_job(callback.from_user.id):
-        await callback.answer("Уже идёт обработка. Подождите или /cancel", show_alert=True)
+    if await db.is_job_active(job_id):
+        await callback.answer("Это видео уже нарезается. Подождите или /cancel", show_alert=True)
         return
 
     await callback.answer(f"Выбрано клипов: {clip_count}")
@@ -110,11 +110,11 @@ async def handle_subtitle_selection(callback: CallbackQuery, state: FSMContext) 
         await callback.answer("Это не ваша задача.", show_alert=True)
         return
 
-    if await db.has_active_job(callback.from_user.id):
-        await callback.answer("Уже идёт обработка. Подождите или /cancel", show_alert=True)
+    if await db.is_job_active(job_id):
+        await callback.answer("Это видео уже нарезается. Подождите или /cancel", show_alert=True)
         return
 
-    label = "с субтитрами" if with_subtitles else "без субтитров"
+    label ="с субтитрами" if with_subtitles else "без субтитров"
     await callback.answer(f"Рендер {clip_count} клипов {label}")
     await callback.message.edit_reply_markup(reply_markup=None)
 

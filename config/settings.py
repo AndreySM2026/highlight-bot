@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     )
     max_clips: int = 10
     max_videos_per_day: int = 10
+    max_parallel_jobs: int = Field(
+        default=2,
+        description="Сколько видео обрабатываются одновременно (4 ядра / 6 ГБ — 2), остальные ждут в очереди",
+    )
+    max_jobs_per_user: int = Field(
+        default=3,
+        description="Сколько видео один пользователь может отправить, не дожидаясь окончания предыдущих",
+    )
     min_clip_sec: int = 15
     max_clip_sec: int = 90
     clip_pad_start_sec: float = Field(default=0.15, description="Запас до первого слова клипа, сек")

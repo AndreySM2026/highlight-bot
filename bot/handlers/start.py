@@ -39,33 +39,36 @@ async def cmd_help(message: Message) -> None:
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
-    from services.jobs.manager import cancel_user_job
+    from services.jobs.manager import cancel_user_jobs
 
     if not message.from_user:
         return
 
-    was_locked, job_id = await cancel_user_job(message.from_user.id)
+    cancelled = await cancel_user_jobs(message.from_user.id)
     await state.set_state(ProcessingStates.waiting_video)
-    if was_locked:
+    if cancelled:
         await message.answer(
-            "✅ Обработка остановлена, блокировка снята.\n\n"
+            f"✅ Остановлено видео: {cancelled}.\n\n"
             "Если анализ уже завершён — снова нажмите кнопку с числом клипов "
             "под сообщением с результатами.\n"
-            "Или отправьте новое видео / ссылку Rutube."
+            "Или отправьте новое видео / ссылку."
         )
     else:
-        await message.answer("Активной обработки нет. Отправьте видео или ссылку Rutube.")
+        await message.answer("Активной обработки нет. Отправьте видео или ссылку.")
 
 
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
+    from services.jobs.queue import JOB_QUEUE
     from services.storage.database import Database
 
     db = Database()
     used = await db.get_daily_usage(message.from_user.id)
-    active = await db.has_active_job(message.from_user.id)
-    status = "идёт обработка" if active else "свободен"
+    active = await db.count_active_jobs(message.from_user.id)
+    status = f"в работе ваших видео: {active} из {settings.max_jobs_per_user}" if active else "свободен"
     await message.answer(
-        f"Сегодня обработано: {used}/10\n"
-        f"Статус: {status}"
+        f"Сегодня обработано: {used}/{settings.max_videos_per_day}\n"
+        f"Статус: {status}\n"
+        f"Бот сейчас обрабатывает: {JOB_QUEUE.running} из {settings.max_parallel_jobs}, "
+        f"в очереди: {JOB_QUEUE.waiting}"
     )

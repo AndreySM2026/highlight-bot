@@ -48,13 +48,6 @@ async def handle_video_link(message: Message, state: FSMContext) -> None:
         return
 
     db = Database()
-    if await db.has_active_job(message.from_user.id):
-        await message.answer(
-            "У вас уже идёт обработка видео.\n"
-            "Подождите завершения или отправьте /cancel для отмены."
-        )
-        return
-
     await message.answer(f"✅ Принял ссылку {link.label}.\nНачинаю скачивание…")
 
     progress_msg = await message.answer(

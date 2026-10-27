@@ -31,9 +31,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS user_locks (
-    user_id INTEGER PRIMARY KEY,
-    job_id TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS active_jobs (
+    job_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL
 );
 """
 
@@ -86,45 +86,56 @@ class Database:
         finally:
             await conn.close()
 
-    async def has_active_job(self, user_id: int) -> bool:
+    async def count_active_jobs(self, user_id: int) -> int:
         conn = await self._connection()
         try:
             cursor = await conn.execute(
-                "SELECT 1 FROM user_locks WHERE user_id = ?",
+                "SELECT COUNT(*) AS c FROM active_jobs WHERE user_id = ?",
                 (user_id,),
             )
+            row = await cursor.fetchone()
+            return int(row["c"]) if row else 0
+        finally:
+            await conn.close()
+
+    async def has_active_job(self, user_id: int) -> bool:
+        return await self.count_active_jobs(user_id) > 0
+
+    async def is_job_active(self, job_id: str) -> bool:
+        conn = await self._connection()
+        try:
+            cursor = await conn.execute("SELECT 1 FROM active_jobs WHERE job_id = ?", (job_id,))
             return await cursor.fetchone() is not None
         finally:
             await conn.close()
 
-    async def lock_user(self, user_id: int, job_id: str) -> None:
+    async def lock_job(self, user_id: int, job_id: str) -> None:
         conn = await self._connection()
         try:
             await conn.execute(
-                "INSERT OR REPLACE INTO user_locks (user_id, job_id) VALUES (?, ?)",
-                (user_id, job_id),
+                "INSERT OR REPLACE INTO active_jobs (job_id, user_id) VALUES (?, ?)",
+                (job_id, user_id),
             )
             await conn.commit()
         finally:
             await conn.close()
 
-    async def unlock_user(self, user_id: int) -> None:
+    async def unlock_job(self, job_id: str) -> None:
         conn = await self._connection()
         try:
-            await conn.execute("DELETE FROM user_locks WHERE user_id = ?", (user_id,))
+            await conn.execute("DELETE FROM active_jobs WHERE job_id = ?", (job_id,))
             await conn.commit()
         finally:
             await conn.close()
 
-    async def get_locked_job_id(self, user_id: int) -> str | None:
+    async def get_active_job_ids(self, user_id: int) -> list[str]:
         conn = await self._connection()
         try:
             cursor = await conn.execute(
-                "SELECT job_id FROM user_locks WHERE user_id = ?",
+                "SELECT job_id FROM active_jobs WHERE user_id = ?",
                 (user_id,),
             )
-            row = await cursor.fetchone()
-            return str(row["job_id"]) if row else None
+            return [str(row["job_id"]) for row in await cursor.fetchall()]
         finally:
             await conn.close()
 
@@ -136,14 +147,14 @@ class Database:
         conn = await self._connection()
         try:
             cursor = await conn.execute(
-                "SELECT jobs.* FROM user_locks JOIN jobs ON jobs.job_id = user_locks.job_id"
+                "SELECT jobs.* FROM active_jobs JOIN jobs ON jobs.job_id = active_jobs.job_id"
             )
             jobs = [dict(row) for row in await cursor.fetchall()]
             await conn.execute(
                 "UPDATE jobs SET status = 'interrupted' "
-                "WHERE job_id IN (SELECT job_id FROM user_locks)"
+                "WHERE job_id IN (SELECT job_id FROM active_jobs)"
             )
-            await conn.execute("DELETE FROM user_locks")
+            await conn.execute("DELETE FROM active_jobs")
             await conn.commit()
             return jobs
         finally:
