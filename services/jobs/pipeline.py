@@ -9,7 +9,12 @@ from aiogram import Bot
 from aiogram.types import FSInputFile
 
 from config.settings import settings
-from services.highlights.detector import detect_highlights
+from services.highlights.detector import (
+    HighlightsUnavailableError,
+    NoGoodHighlightsError,
+    detect_highlights,
+)
+from services.highlights.proofread import ProofreadError, proofread_transcript
 from services.highlights.schemas import HighlightResult, VideoContext
 from services.jobs.progress import progress_message, stage_to_percent
 from services.storage.database import Database
@@ -25,6 +30,7 @@ from services.video.transcribe import release_whisper_model, transcribe_audio
 from services.video.subtitles import apply_subtitles_to_clip, load_transcript
 from services.video.validation import VideoValidationError, validate_video
 from bot.keyboards.clip_count import build_clip_count_keyboard
+from bot.keyboards.subtitles import build_subtitles_keyboard
 
 logger = structlog.get_logger(__name__)
 
@@ -193,16 +199,28 @@ async def run_analysis_pipeline(
         audio_path.unlink(missing_ok=True)
 
     await _update_progress(bot, chat_id, progress_message_id, job_id, "analyzing", 0.5, "Поиск хайлайтов")
-    highlights: HighlightResult = await _run_stage_with_heartbeat(
-        detect_highlights(activity_map, video_context),
-        bot,
-        chat_id,
-        progress_message_id,
-        job_id,
-        "analyzing",
-        "Поиск хайлайтов",
-        ratio_start=0.5,
-    )
+    try:
+        highlights: HighlightResult = await _run_stage_with_heartbeat(
+            detect_highlights(activity_map, video_context),
+            bot,
+            chat_id,
+            progress_message_id,
+            job_id,
+            "analyzing",
+            "Поиск и проверка хайлайтов",
+            ratio_start=0.5,
+        )
+    except HighlightsUnavailableError as exc:
+        logger.error("highlights_unavailable", job_id=job_id, error=str(exc))
+        raise RuntimeError(
+            "ИИ для выбора моментов сейчас не отвечает, поэтому клипы не делаю — "
+            "без него качество нарезки плохое. Попробуйте отправить видео ещё раз через 10–15 минут."
+        ) from exc
+    except NoGoodHighlightsError as exc:
+        logger.warning("highlights_none_approved", job_id=job_id, error=str(exc))
+        raise RuntimeError(
+            "В этом видео не нашлось законченных мыслей, которые работают как отдельный клип."
+        ) from exc
     await _update_progress(bot, chat_id, progress_message_id, job_id, "analyzing", 1.0, "Поиск хайлайтов")
 
     if not highlights.segments:
@@ -227,7 +245,7 @@ async def run_analysis_pipeline(
             f"✅ Анализ завершён ({source_label}).\n\n"
             f"{transcript_note}"
             f"{theme_line}"
-            f"Нашёл *{total_found}* законченных идей.\n"
+            f"Нашёл *{total_found}* законченных мыслей — каждую проверил редактор ИИ.\n"
             f"Рекомендую сделать *{recommended}* клипов.\n\n"
             f"Выберите количество:"
         ),
@@ -283,6 +301,34 @@ async def run_render_pipeline(
     burn_subs = with_subtitles and bool(transcript) and settings.subtitles_enabled
     if with_subtitles and not transcript:
         logger.warning("subtitles_requested_but_no_transcript", job_id=job_id)
+
+    if burn_subs:
+        # Сырой текст Whisper с ошибками не накладываем: сначала вычитка ИИ
+        try:
+            transcript = await _run_stage_with_heartbeat(
+                proofread_transcript(transcript, segments, theme=highlights.video_theme),
+                bot,
+                chat_id,
+                progress_message_id,
+                job_id,
+                "rendering",
+                "Вычитка субтитров",
+                ratio_start=0.0,
+                ratio_end=0.05,
+            )
+        except ProofreadError as exc:
+            logger.error("proofread_unavailable", job_id=job_id, error=str(exc))
+            await db.update_job(job_id, status="waiting_choice", progress=70)
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=progress_message_id,
+                text=(
+                    "⚠️ Не удалось вычитать субтитры: ИИ не ответил. Текст с ошибками не накладываю.\n\n"
+                    "Повторите через пару минут или сделайте клипы без субтитров."
+                ),
+                reply_markup=build_subtitles_keyboard(job_id, clip_count),
+            )
+            return
 
     for idx, segment in enumerate(segments, start=1):
         ratio = (idx - 0.5) / max(total, 1)
