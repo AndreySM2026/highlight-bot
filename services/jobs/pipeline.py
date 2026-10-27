@@ -15,6 +15,7 @@ from services.highlights.detector import (
     detect_highlights,
 )
 from services.highlights.proofread import ProofreadError, proofread_transcript
+from services.timeweb.exceptions import TimewebQuotaError
 from services.highlights.schemas import HighlightResult, VideoContext
 from services.jobs.progress import progress_message, stage_to_percent
 from services.storage.database import Database
@@ -33,6 +34,11 @@ from bot.keyboards.clip_count import build_clip_count_keyboard
 from bot.keyboards.subtitles import build_subtitles_keyboard
 
 logger = structlog.get_logger(__name__)
+
+AI_QUOTA_TEXT = (
+    "У ИИ-агента TimeWeb закончился лимит токенов. "
+    "Администратору: пополните лимит агента в панели TimeWeb (ИИ-сервисы → агент), затем повторите."
+)
 
 
 def _source_label(source: str) -> str:
@@ -210,6 +216,9 @@ async def run_analysis_pipeline(
             "Поиск и проверка хайлайтов",
             ratio_start=0.5,
         )
+    except TimewebQuotaError as exc:
+        logger.error("ai_token_limit_exceeded", job_id=job_id, stage="highlights", error=str(exc)[:300])
+        raise RuntimeError(AI_QUOTA_TEXT) from exc
     except HighlightsUnavailableError as exc:
         logger.error("highlights_unavailable", job_id=job_id, error=str(exc))
         raise RuntimeError(
@@ -316,15 +325,22 @@ async def run_render_pipeline(
                 ratio_start=0.0,
                 ratio_end=0.05,
             )
-        except ProofreadError as exc:
-            logger.error("proofread_unavailable", job_id=job_id, error=str(exc))
+        except (ProofreadError, TimewebQuotaError) as exc:
+            quota = isinstance(exc, TimewebQuotaError)
+            logger.error(
+                "ai_token_limit_exceeded" if quota else "proofread_unavailable",
+                job_id=job_id,
+                stage="proofread",
+                error=str(exc)[:300],
+            )
+            reason = AI_QUOTA_TEXT if quota else "ИИ не ответил. Повторите через пару минут."
             await db.update_job(job_id, status="waiting_choice", progress=70)
             await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_message_id,
                 text=(
-                    "⚠️ Не удалось вычитать субтитры: ИИ не ответил. Текст с ошибками не накладываю.\n\n"
-                    "Повторите через пару минут или сделайте клипы без субтитров."
+                    "⚠️ Не удалось вычитать субтитры, текст с ошибками не накладываю.\n\n"
+                    f"{reason}\n\nМожно сделать клипы без субтитров."
                 ),
                 reply_markup=build_subtitles_keyboard(job_id, clip_count),
             )

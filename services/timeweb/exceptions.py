@@ -11,5 +11,9 @@ class TimewebAPIError(TimewebError):
         super().__init__(f"Timeweb API error {status}: {body}")
 
 
+class TimewebQuotaError(TimewebAPIError):
+    """402 token_limit_exceeded: у AI-агента закончился лимит токенов — повторять бессмысленно."""
+
+
 class TimewebParseError(TimewebError):
     """Ответ модели не удалось распарсить как JSON."""

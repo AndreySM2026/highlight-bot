@@ -15,6 +15,7 @@ import structlog
 
 from services.highlights.schemas import HighlightSegment, TranscriptSegment
 from services.timeweb.client import TimewebClient
+from services.timeweb.exceptions import TimewebQuotaError
 from services.timeweb.json_parser import extract_json
 from services.timeweb.prompts.common import JSON_RULES, retry_note
 
@@ -87,6 +88,8 @@ async def _proofread_batch(
         try:
             response = await client.call_agent(prompt + retry_note(attempt))
             return _validate(lines, extract_json(response))
+        except TimewebQuotaError:
+            raise  # лимит токенов исчерпан — повтор только сожжёт время
         except Exception as exc:
             last_error = exc
             logger.warning("proofread_failed", attempt=attempt, error=str(exc)[:300])

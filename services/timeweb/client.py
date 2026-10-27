@@ -5,7 +5,7 @@ import structlog
 
 from config.constants import TIMEWEB_API_BASE
 from config.settings import settings
-from services.timeweb.exceptions import TimewebAPIError
+from services.timeweb.exceptions import TimewebAPIError, TimewebQuotaError
 
 logger = structlog.get_logger(__name__)
 
@@ -30,6 +30,8 @@ class TimewebClient:
                 body = await resp.text()
                 if resp.status != 200:
                     logger.error("timeweb_api_error", status=resp.status, body=body[:500])
+                    if resp.status == 402 or "token_limit_exceeded" in body:
+                        raise TimewebQuotaError(resp.status, body)
                     raise TimewebAPIError(resp.status, body)
 
                 data = await resp.json()

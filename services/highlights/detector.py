@@ -17,6 +17,7 @@ from services.highlights.speech_blocks import build_speech_blocks, segment_from_
 from services.highlights.transcript import attach_transcript_to_blocks
 from services.highlights.verify import Candidate, verify_candidates
 from services.timeweb.client import TimewebClient
+from services.timeweb.exceptions import TimewebQuotaError
 from services.timeweb.json_parser import extract_json
 from services.timeweb.prompts.common import retry_note
 from services.timeweb.prompts.highlight_detection import build_highlight_prompt
@@ -114,6 +115,8 @@ async def _call_with_retries(label: str, func):
     for attempt in range(1, AI_ATTEMPTS + 1):
         try:
             return await func(attempt)
+        except TimewebQuotaError:
+            raise  # лимит токенов исчерпан — повтор только сожжёт время
         except Exception as exc:
             last_error = exc
             logger.warning(
