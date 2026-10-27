@@ -18,6 +18,7 @@ from services.highlights.transcript import attach_transcript_to_blocks
 from services.highlights.verify import Candidate, verify_candidates
 from services.timeweb.client import TimewebClient
 from services.timeweb.json_parser import extract_json
+from services.timeweb.prompts.common import retry_note
 from services.timeweb.prompts.highlight_detection import build_highlight_prompt
 
 logger = structlog.get_logger(__name__)
@@ -112,7 +113,7 @@ async def _call_with_retries(label: str, func):
     last_error: Exception | None = None
     for attempt in range(1, AI_ATTEMPTS + 1):
         try:
-            return await func()
+            return await func(attempt)
         except Exception as exc:
             last_error = exc
             logger.warning(
@@ -142,8 +143,8 @@ async def detect_highlights(
         raise HighlightsUnavailableError("нет расшифровки речи")
     prompt = build_highlight_prompt(activity_map, context)
 
-    async def select() -> tuple[dict, list[Candidate]]:
-        response = await client.call_agent(prompt)
+    async def select(attempt: int) -> tuple[dict, list[Candidate]]:
+        response = await client.call_agent(prompt + retry_note(attempt))
         data = extract_json(response)
         candidates = _parse_candidates(data, blocks)
         if not candidates:
@@ -156,8 +157,8 @@ async def detect_highlights(
     data, candidates = await _call_with_retries("highlights_select", select)
     logger.info("highlights_selected", count=len(candidates))
 
-    async def verify() -> list[Candidate]:
-        return await verify_candidates(client, candidates, blocks)
+    async def verify(attempt: int) -> list[Candidate]:
+        return await verify_candidates(client, candidates, blocks, attempt=attempt)
 
     approved = await _call_with_retries("highlights_verify", verify)
     if not approved:

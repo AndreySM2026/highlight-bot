@@ -18,6 +18,7 @@ from config.settings import settings
 from services.highlights.schemas import SpeechBlock
 from services.timeweb.client import TimewebClient
 from services.timeweb.json_parser import extract_json
+from services.timeweb.prompts.common import JSON_RULES, retry_note
 
 logger = structlog.get_logger(__name__)
 
@@ -69,7 +70,8 @@ def build_verify_prompt(candidates: list[Candidate], blocks: list[SpeechBlock]) 
 - "reject" — не годится даже с правкой границ.
 Будь строгим: сомневаешься, что мысль закончена или понятна, — "fix" или "reject".
 
-Ответь ТОЛЬКО валидным JSON без markdown:
+{JSON_RULES}
+Формат:
 {{"clips": [{{"clip": 1, "verdict": "ok", "start_block": 41, "end_block": 47, "problem": "что не так (пусто, если ok)"}}]}}
 
 {chr(10).join(parts)}
@@ -144,8 +146,10 @@ async def verify_candidates(
     client: TimewebClient,
     candidates: list[Candidate],
     blocks: list[SpeechBlock],
+    *,
+    attempt: int = 1,
 ) -> list[Candidate]:
     if not candidates:
         return []
-    response = await client.call_agent(build_verify_prompt(candidates, blocks))
+    response = await client.call_agent(build_verify_prompt(candidates, blocks) + retry_note(attempt))
     return apply_verdicts(extract_json(response), candidates, blocks)

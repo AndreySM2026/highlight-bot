@@ -16,6 +16,7 @@ import structlog
 from services.highlights.schemas import HighlightSegment, TranscriptSegment
 from services.timeweb.client import TimewebClient
 from services.timeweb.json_parser import extract_json
+from services.timeweb.prompts.common import JSON_RULES, retry_note
 
 logger = structlog.get_logger(__name__)
 
@@ -45,7 +46,8 @@ def _build_prompt(lines: dict[int, str], theme: str, titles: list[str]) -> str:
 - слова-паразиты («ну», «вот», «как бы», «э-э») и повторы убери, если они мешают читать;
 - id и количество строк не меняй, строки не объединяй и не дели.
 
-Ответь ТОЛЬКО валидным JSON без markdown:
+{JSON_RULES}
+Формат:
 {{"lines": [{{"id": 0, "text": "исправленный текст"}}]}}
 
 Строки:
@@ -83,7 +85,7 @@ async def _proofread_batch(
     last_error: Exception | None = None
     for attempt in range(1, ATTEMPTS + 1):
         try:
-            response = await client.call_agent(prompt)
+            response = await client.call_agent(prompt + retry_note(attempt))
             return _validate(lines, extract_json(response))
         except Exception as exc:
             last_error = exc

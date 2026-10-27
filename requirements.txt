@@ -9,3 +9,4 @@ faster-whisper>=1.1.0,<2.0
 # PyAV 19 убрал av.open(metadata_errors=...), который вызывает faster-whisper
 av>=11,<19
 opencv-python-headless>=4.10.0,<5.0
+json-repair>=0.30,<1.0

@@ -4,6 +4,7 @@ from config.settings import settings
 from services.highlights.schemas import ActivityMap, SpeechBlock, VideoContext
 from services.highlights.speech_blocks import build_speech_blocks
 from services.highlights.transcript import attach_transcript_to_blocks
+from services.timeweb.prompts.common import JSON_RULES
 
 
 def _block_line(block: SpeechBlock) -> str:
@@ -82,7 +83,8 @@ def build_highlight_prompt(activity_map: ActivityMap, context: VideoContext | No
   - reason — одно предложение: чем отрывок зацепит зрителя.
 - recommended_clip_count: сколько отрывков действительно стоит публиковать (1–10).
 
-Ответь ТОЛЬКО валидным JSON без markdown, строго в таком формате:
+{JSON_RULES}
+Формат:
 {{
   "video_theme": "…",
   "recommended_clip_count": 3,

@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 import re
 
+import json_repair
+import structlog
+
 from services.timeweb.exceptions import TimewebParseError
+
+logger = structlog.get_logger(__name__)
 
 
 def extract_json(text: str) -> dict:
@@ -18,10 +23,16 @@ def extract_json(text: str) -> dict:
         pass
 
     match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError as exc:
-            raise TimewebParseError(f"Invalid JSON in model response: {exc}") from exc
+    candidate = match.group() if match else text
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
 
-    raise TimewebParseError("No JSON object found in model response")
+    # Модель часто ставит "двойные кавычки" внутри строк («Песня "Матушка"…») или теряет запятые
+    repaired = json_repair.loads(candidate)
+    if isinstance(repaired, dict) and repaired:
+        logger.info("model_json_repaired", head=text[:200])
+        return repaired
+
+    raise TimewebParseError(f"No valid JSON in model response; head: {text[:300]!r}")
