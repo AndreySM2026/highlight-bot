@@ -118,6 +118,13 @@ def build_ass_for_clip(
         mid = (start + end) / 2
         return "Seam" if any(a <= mid < b for a, b in split_ranges) else "Default"
 
+    edges = sorted({edge for rng in split_ranges for edge in rng})
+
+    def pieces(start: float, end: float) -> list[tuple[float, float]]:
+        """Режем показ фразы по сменам раскладки, чтобы текст не остался на лице после склейки."""
+        cuts = [start, *(e for e in edges if start < e < end), end]
+        return [(a, b) for a, b in zip(cuts, cuts[1:]) if b - a >= 0.05]
+
     for seg in transcript:
         if seg.end <= clip_start or seg.start >= clip_end:
             continue
@@ -134,12 +141,13 @@ def build_ass_for_clip(
         for page in pages:
             share = len(" ".join(page)) / total_chars if total_chars else 1 / len(pages)
             page_end = min(rel_end, page_start + (rel_end - rel_start) * share)
-            dialogues.append(
-                "Dialogue: 0,"
-                f"{_ass_timestamp(page_start)},"
-                f"{_ass_timestamp(page_end)},"
-                f"{style_for(page_start, page_end)},,0,0,0,,{_format_ass_text(page)}"
-            )
+            for piece_start, piece_end in pieces(page_start, page_end):
+                dialogues.append(
+                    "Dialogue: 0,"
+                    f"{_ass_timestamp(piece_start)},"
+                    f"{_ass_timestamp(piece_end)},"
+                    f"{style_for(piece_start, piece_end)},,0,0,0,,{_format_ass_text(page)}"
+                )
             page_start = page_end
 
     if not dialogues:
