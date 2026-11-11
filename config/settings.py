@@ -168,6 +168,18 @@ class Settings(BaseSettings):
         default=0,
         description="Потоки CPU для Whisper, 0 = все ядра",
     )
+    timeweb_ai_gateway_key: str = Field(
+        default="",
+        description="Ключ TimeWeb AI Gateway (ИИ-сервисы → AI Gateway → API-ключи) для облачной расшифровки",
+    )
+    timeweb_ai_gateway_url: str = Field(default="https://api.timeweb.ai/v1", description="Адрес TimeWeb AI Gateway")
+    asr_provider: str = Field(
+        default="auto",
+        description="Расшифровка: auto — облако TimeWeb, если задан ключ, иначе локально; timeweb; local",
+    )
+    asr_cloud_model: str = Field(default="timeweb/whisper-large-v3", description="Модель облачной расшифровки")
+    asr_cloud_parallel: int = Field(default=3, description="Сколько кусков аудио отправлять в облако одновременно")
+    asr_cloud_rub_per_min: float = Field(default=0.549, description="Цена облачной расшифровки, ₽ за минуту (для логов)")
     whisper_chunk_sec: int = Field(
         default=300,
         description="Длина куска аудио для Whisper, сек — ограничивает пик памяти на длинных видео",

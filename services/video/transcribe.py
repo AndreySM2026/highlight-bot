@@ -59,7 +59,7 @@ def _load_model(model_name: str) -> WhisperModel:
         return _model
 
 
-def _iter_audio_chunks(audio_path: Path, chunk_sec: int) -> Iterator[tuple[float, np.ndarray | str]]:
+def iter_audio_chunks(audio_path: Path, chunk_sec: int) -> Iterator[tuple[float, np.ndarray | str]]:
     """
     Отдаёт аудио кусками (offset_sec, samples), чтобы память не росла с длиной видео.
     faster-whisper иначе грузит весь файл и строит спектрограмму целиком — на 25+ мин это OOM.
@@ -122,38 +122,47 @@ def _transcribe_sync(audio_path: Path, *, duration_sec: float) -> list[Transcrip
         return _transcribe_locked(audio_path, duration_sec=duration_sec)
 
 
-def _transcribe_locked(audio_path: Path, *, duration_sec: float) -> list[TranscriptSegment]:
+def _transcribe_chunk_locally(audio: np.ndarray | str, offset: float, duration_sec: float) -> list[TranscriptSegment]:
     model_name = whisper_model_for_duration(duration_sec)
-    beam_size = whisper_beam_size_for_duration(duration_sec)
     model = _load_model(model_name)
-    language = settings.whisper_language.strip() or None
+    segments_iter, _ = model.transcribe(
+        audio,
+        language=settings.whisper_language.strip() or None,
+        beam_size=whisper_beam_size_for_duration(duration_sec),
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": 400},
+        # Метки по словам точнее меток сегмента: по ним клип заканчивается ровно на последнем слове
+        word_timestamps=True,
+    )
+    segments: list[TranscriptSegment] = []
+    for item in segments_iter:
+        text = normalize_speech_text(item.text)
+        if not text:
+            continue
+        words = getattr(item, "words", None) or []
+        start = words[0].start if words else item.start
+        end = words[-1].end if words else item.end
+        segments.append(
+            TranscriptSegment(
+                start=round(start + offset, 2),
+                end=round(max(end, start + 0.1) + offset, 2),
+                text=text,
+            )
+        )
+    return segments
+
+
+def transcribe_samples_locally(audio: np.ndarray | str, offset: float, duration_sec: float) -> list[TranscriptSegment]:
+    """Один кусок локальной моделью (запасной путь облачной расшифровки)."""
+    with _transcribe_lock:
+        return _transcribe_chunk_locally(audio, offset, duration_sec)
+
+
+def _transcribe_locked(audio_path: Path, *, duration_sec: float) -> list[TranscriptSegment]:
     chunk_sec = max(60, settings.whisper_chunk_sec)
     segments: list[TranscriptSegment] = []
-    info = None
-    for chunk_idx, (offset, audio) in enumerate(_iter_audio_chunks(audio_path, chunk_sec)):
-        segments_iter, info = model.transcribe(
-            audio,
-            language=language,
-            beam_size=beam_size,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 400},
-            # Метки по словам точнее меток сегмента: по ним клип заканчивается ровно на последнем слове
-            word_timestamps=True,
-        )
-        for item in segments_iter:
-            text = normalize_speech_text(item.text)
-            if not text:
-                continue
-            words = getattr(item, "words", None) or []
-            start = words[0].start if words else item.start
-            end = words[-1].end if words else item.end
-            segments.append(
-                TranscriptSegment(
-                    start=round(start + offset, 2),
-                    end=round(max(end, start + 0.1) + offset, 2),
-                    text=text,
-                )
-            )
+    for chunk_idx, (offset, audio) in enumerate(iter_audio_chunks(audio_path, chunk_sec)):
+        segments.extend(_transcribe_chunk_locally(audio, offset, duration_sec))
         logger.info(
             "whisper_chunk_done",
             chunk=chunk_idx + 1,
@@ -164,9 +173,7 @@ def _transcribe_locked(audio_path: Path, *, duration_sec: float) -> list[Transcr
         "whisper_done",
         path=str(audio_path),
         segments=len(segments),
-        language=getattr(info, "language", None),
-        model=model_name,
-        beam_size=beam_size,
+        model=whisper_model_for_duration(duration_sec),
         chunk_sec=chunk_sec,
         duration_sec=round(duration_sec, 1),
     )
@@ -183,6 +190,10 @@ async def transcribe_audio(audio_path: Path, *, duration_sec: float) -> list[Tra
     if not settings.whisper_enabled:
         return []
     timeout = _transcribe_timeout(duration_sec)
+    from services.video.cloud_asr import cloud_asr_enabled, transcribe_cloud
+
+    if cloud_asr_enabled():
+        return await asyncio.wait_for(transcribe_cloud(audio_path, duration_sec=duration_sec), timeout=timeout)
     return await asyncio.wait_for(
         asyncio.to_thread(_transcribe_sync, audio_path, duration_sec=duration_sec),
         timeout=timeout,
