@@ -59,7 +59,9 @@ def _load_model(model_name: str) -> WhisperModel:
         return _model
 
 
-def iter_audio_chunks(audio_path: Path, chunk_sec: int) -> Iterator[tuple[float, np.ndarray | str]]:
+def iter_audio_chunks(
+    audio_path: Path, chunk_sec: int, *, search_sec: float = _CUT_SEARCH_SEC
+) -> Iterator[tuple[float, np.ndarray | str]]:
     """
     Отдаёт аудио кусками (offset_sec, samples), чтобы память не росла с длиной видео.
     faster-whisper иначе грузит весь файл и строит спектрограмму целиком — на 25+ мин это OOM.
@@ -83,7 +85,7 @@ def iter_audio_chunks(audio_path: Path, chunk_sec: int) -> Iterator[tuple[float,
             return
 
         target = chunk_sec * _SAMPLE_RATE
-        slack = _CUT_SEARCH_SEC * _SAMPLE_RATE
+        slack = int(search_sec * _SAMPLE_RATE)
         buffer = np.zeros(0, dtype=np.float32)
         offset = 0.0
         finished = False

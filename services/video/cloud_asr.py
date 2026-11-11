@@ -5,8 +5,8 @@
 «общему И», «с УПЕР И», Large v3 — «общего искусственного интеллекта», «суперискусственного».
 И быстрее: 5 минут аудио — ~11 с против ~50 с локально.
 
-Звук режется на куски по паузам (как для локального Whisper), куски уходят в облако
-параллельно. Кусок, который облако не распознало, расшифровывается локально —
+Звук режется на куски ~30 с по паузам, куски уходят в облако параллельно
+(на длинных кусках таймкоды облака уезжают на секунды). Кусок, который облако не распознало, расшифровывается локально —
 видео обрабатывается в любом случае.
 """
 
@@ -135,7 +135,10 @@ async def transcribe_cloud(audio_path: Path, *, duration_sec: float) -> list[Tra
     """Расшифровка через Whisper Large v3 в TimeWeb; куски, не распознанные облаком, — локально."""
     from services.video.transcribe import iter_audio_chunks, transcribe_samples_locally
 
-    chunks = list(iter_audio_chunks(audio_path, max(60, settings.whisper_chunk_sec)))
+    # Короткие куски: внутри длинного таймкоды облака уезжают вперёд (до +4 с к концу 5 минут),
+    # клип начинался позже начала мысли, субтитры отставали от голоса. На 30 с — расхождение ~0,1 с.
+    chunk_sec = max(10, settings.asr_cloud_chunk_sec)
+    chunks = list(iter_audio_chunks(audio_path, chunk_sec, search_sec=max(2.0, chunk_sec / 5)))
     semaphore = asyncio.Semaphore(settings.asr_cloud_parallel)
     fallbacks = 0
 

@@ -178,7 +178,11 @@ class Settings(BaseSettings):
         description="Расшифровка: auto — облако TimeWeb, если задан ключ, иначе локально; timeweb; local",
     )
     asr_cloud_model: str = Field(default="timeweb/whisper-large-v3", description="Модель облачной расшифровки")
-    asr_cloud_parallel: int = Field(default=3, description="Сколько кусков аудио отправлять в облако одновременно")
+    asr_cloud_parallel: int = Field(default=4, description="Сколько кусков аудио отправлять в облако одновременно")
+    asr_cloud_chunk_sec: int = Field(
+        default=30,
+        description="Длина куска для облачной расшифровки. На длинных кусках таймкоды TimeWeb уезжают до +4 с к концу 5 минут",
+    )
     asr_cloud_rub_per_min: float = Field(default=0.549, description="Цена облачной расшифровки, ₽ за минуту (для логов)")
     whisper_chunk_sec: int = Field(
         default=300,
