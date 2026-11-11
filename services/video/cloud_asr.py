@@ -91,6 +91,18 @@ def _segments_from_response(data: dict, offset: float) -> list[TranscriptSegment
     return result
 
 
+def _without_overlaps(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+    """Large v3 часто тянет конец сегмента за начало следующего — обрезаем по началу следующего."""
+    result: list[TranscriptSegment] = []
+    for idx, seg in enumerate(segments):
+        if idx + 1 < len(segments):
+            next_start = segments[idx + 1].start
+            if seg.end > next_start:
+                seg = seg.model_copy(update={"end": round(max(next_start, seg.start + 0.1), 2)})
+        result.append(seg)
+    return result
+
+
 async def _transcribe_chunk(session: aiohttp.ClientSession, samples: np.ndarray, offset: float) -> list[TranscriptSegment]:
     last_error: Exception | None = None
     audio = await asyncio.to_thread(_mp3_bytes, samples)
@@ -143,7 +155,7 @@ async def transcribe_cloud(audio_path: Path, *, duration_sec: float) -> list[Tra
 
         parts = await asyncio.gather(*(run(offset, samples) for offset, samples in chunks))
 
-    segments = sorted((s for part in parts for s in part), key=lambda s: s.start)
+    segments = _without_overlaps(sorted((s for part in parts for s in part), key=lambda s: s.start))
     logger.info(
         "cloud_asr_done",
         model=settings.asr_cloud_model,

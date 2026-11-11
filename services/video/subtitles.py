@@ -164,9 +164,13 @@ def build_ass_for_clip(
         return [(a, b) for a, b in zip(cuts, cuts[1:]) if b - a >= 0.05]
 
     in_clip = [s for s in transcript if s.end > clip_start and s.start < clip_end]
-    for seg in _merge_tiny_segments(sorted(in_clip, key=lambda s: s.start)):
+    segments = _merge_tiny_segments(sorted(in_clip, key=lambda s: s.start))
+    for idx, seg in enumerate(segments):
         rel_start = max(0.0, seg.start - clip_start)
         rel_end = min(clip_duration, seg.end - clip_start)
+        # Облачный Whisper отдаёт сегменты внахлёст — иначе две фразы висят на экране разом (4 строки)
+        if idx + 1 < len(segments):
+            rel_end = min(rel_end, segments[idx + 1].start - clip_start)
         if rel_end - rel_start < 0.25:
             continue
         pages = wrap_subtitle_pages(seg.text)
