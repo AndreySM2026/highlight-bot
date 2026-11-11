@@ -23,12 +23,19 @@ def _clamp_duration(segment: HighlightSegment, blocks: list[SpeechBlock]) -> Hig
     return segment
 
 
-def _pad_edges(segment: HighlightSegment, duration_sec: float) -> HighlightSegment:
-    """Метки Whisper режут первый/последний слог — добавляем немного воздуха по краям."""
+def _pad_edges(segment: HighlightSegment, duration_sec: float, blocks: list[SpeechBlock]) -> HighlightSegment:
+    """
+    Немного воздуха по краям, чтобы не съесть первый/последний слог, — но только в тишину:
+    запас не заходит на соседнюю фразу (иначе в конец клипа попадает слово следующей темы).
+    """
+    prev_end = max((b.end for b in blocks if b.end <= segment.start_time + 0.05), default=0.0)
+    next_start = min((b.start for b in blocks if b.start >= segment.end_time - 0.05), default=duration_sec)
+    start = max(segment.start_time - settings.clip_pad_start_sec, prev_end + 0.05, 0.0)
+    end = min(segment.end_time + settings.clip_pad_end_sec, next_start - 0.05, duration_sec)
     return segment.model_copy(
         update={
-            "start_time": round(max(0.0, segment.start_time - settings.clip_pad_start_sec), 2),
-            "end_time": round(min(duration_sec, segment.end_time + settings.clip_pad_end_sec), 2),
+            "start_time": round(min(start, segment.start_time), 2),
+            "end_time": round(max(end, segment.end_time), 2),
         }
     )
 
@@ -60,7 +67,7 @@ def normalize_segments(
             break
 
     cleaned.sort(key=lambda s: s.start_time)
-    cleaned = [_pad_edges(seg, duration_sec) for seg in cleaned]
+    cleaned = [_pad_edges(seg, duration_sec, blocks) for seg in cleaned]
 
     recommended = min(max(result.recommended_clip_count, 1), len(cleaned) or 1)
     recommended = min(recommended, settings.max_clips)

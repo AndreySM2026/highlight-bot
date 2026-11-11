@@ -15,7 +15,7 @@ import structlog
 
 from services.highlights.schemas import HighlightSegment, TranscriptSegment
 from services.timeweb.client import TimewebClient
-from services.timeweb.exceptions import TimewebQuotaError
+from services.timeweb.exceptions import TimewebModerationError, TimewebQuotaError
 from services.timeweb.json_parser import extract_json
 from services.timeweb.prompts.common import JSON_RULES, retry_note
 
@@ -56,7 +56,8 @@ def _build_prompt(lines: dict[int, str], theme: str, titles: list[str]) -> str:
 """
 
 
-def _validate(original: dict[int, str], data: dict) -> dict[int, str]:
+def _validate(original: dict[int, str], data: dict) -> tuple[dict[int, str], list[int]]:
+    """Годные исправленные строки и id строк, которые корректор пропустил или переписал подозрительно."""
     fixed: dict[int, str] = {}
     for item in data.get("lines", []) or []:
         try:
@@ -64,16 +65,38 @@ def _validate(original: dict[int, str], data: dict) -> dict[int, str]:
         except (KeyError, TypeError, ValueError):
             continue
         text = str(item.get("text", "")).strip()
-        if line_id in original and text:
-            fixed[line_id] = text
-    missing = set(original) - set(fixed)
-    if missing:
-        raise ValueError(f"корректор вернул не все строки: нет {sorted(missing)[:10]}")
-    for line_id, text in fixed.items():
-        ratio = len(text) / max(1, len(original[line_id]))
-        if not 0.4 <= ratio <= 1.8:
-            raise ValueError(f"строка {line_id} изменена слишком сильно (длина ×{ratio:.1f})")
-    return fixed
+        if line_id not in original or not text:
+            continue
+        source = original[line_id]
+        ratio = len(text) / max(1, len(source))
+        # Короткие строки законно меняются сильно («Ну, вот, да» → «Да»), их не проверяем
+        if len(source) >= 15 and not 0.3 <= ratio <= 2.2:
+            continue
+        fixed[line_id] = text
+    bad = sorted(set(original) - set(fixed))
+    return fixed, bad
+
+
+async def _request(client: TimewebClient, lines: dict[int, str], theme: str, titles: list[str], attempt: int):
+    response = await client.call_agent(_build_prompt(lines, theme, titles) + retry_note(attempt))
+    return _validate(lines, extract_json(response))
+
+
+async def _proofread_moderated(
+    client: TimewebClient,
+    lines: dict[int, str],
+    theme: str,
+    titles: list[str],
+) -> dict[int, str]:
+    """Модерация отклонила пакет: делим пополам; строки, отклонённые и в малой группе, оставляем как есть."""
+    if len(lines) <= 4:
+        logger.warning("proofread_moderated_kept_original", ids=sorted(lines))
+        return dict(lines)
+    ids = sorted(lines)
+    result: dict[int, str] = {}
+    for half in (ids[: len(ids) // 2], ids[len(ids) // 2 :]):
+        result.update(await _proofread_batch(client, {i: lines[i] for i in half}, theme, titles))
+    return result
 
 
 async def _proofread_batch(
@@ -82,12 +105,26 @@ async def _proofread_batch(
     theme: str,
     titles: list[str],
 ) -> dict[int, str]:
-    prompt = _build_prompt(lines, theme, titles)
+    """
+    Одна-две «плохие» строки не должны браковать весь пакет: годные принимаем,
+    плохие переспрашиваем отдельно, а если и это не помогло — оставляем исходный текст строки.
+    """
     last_error: Exception | None = None
     for attempt in range(1, ATTEMPTS + 1):
         try:
-            response = await client.call_agent(prompt + retry_note(attempt))
-            return _validate(lines, extract_json(response))
+            try:
+                fixed, bad = await _request(client, lines, theme, titles, attempt)
+            except TimewebModerationError:
+                return await _proofread_moderated(client, lines, theme, titles)
+            if len(bad) > max(1, len(lines) // 10):
+                raise ValueError(f"корректор не справился с {len(bad)} из {len(lines)} строк: {bad[:10]}")
+            if bad:
+                retry_fixed, still_bad = await _request(client, {i: lines[i] for i in bad}, theme, titles, attempt + 1)
+                fixed.update(retry_fixed)
+                for i in still_bad:
+                    fixed[i] = lines[i]
+                logger.info("proofread_lines_kept_original", ids=still_bad, retried=len(bad))
+            return fixed
         except TimewebQuotaError:
             raise  # лимит токенов исчерпан — повтор только сожжёт время
         except Exception as exc:

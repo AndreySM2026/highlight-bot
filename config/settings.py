@@ -131,6 +131,14 @@ class Settings(BaseSettings):
         default=1800,
         description="Не сканировать смены сцен на видео длиннее (экономит минуты на 30–60 мин роликах)",
     )
+    highlight_part_chars: int = Field(
+        default=45_000,
+        description="Длинную расшифровку ИИ выбирает частями такого размера (≈ 25 мин речи): меньше таймаутов 504",
+    )
+    highlight_verify_max_candidates: int = Field(
+        default=12,
+        description="Сколько лучших кандидатов отдавать редактору ИИ на проверку",
+    )
     highlight_prompt_max_chars: int = Field(
         default=120_000,
         description="Макс. размер расшифровки в промпте LLM, символов (≈ 60 мин речи)",
@@ -148,8 +156,11 @@ class Settings(BaseSettings):
         description="Модель faster-whisper для видео < 30 мин: tiny, base, small",
     )
     whisper_long_model: str = Field(
-        default="tiny",
-        description="Модель Whisper для видео ≥ 30 мин (быстрее в 3–5 раз)",
+        default="base",
+        description=(
+            "Модель Whisper для видео ≥ 30 мин. Было tiny — коллеги жаловались на ошибки "
+            "в чётко слышных словах; base медленнее ~в 2 раза, но заметно точнее"
+        ),
     )
     whisper_beam_size: int = Field(default=3, description="beam_size Whisper для коротких видео")
     whisper_long_beam_size: int = Field(default=1, description="beam_size Whisper для длинных видео")
@@ -186,20 +197,24 @@ class Settings(BaseSettings):
         default=3.2,
         description="Высота окна половинки = высота лица × это число (меньше — крупнее лицо)",
     )
-    plate_zoom_enabled: bool = Field(
-        default=False,
-        description=(
-            "Приближать кадр на планах, где видна плашка с именем гостя, чтобы она не попадала обрезанной. "
-            "Выключено: на крупных планах наезд ×1.3 слишком тесный, лицо уходит к краю при повороте головы"
-        ),
-    )
     plate_min_text_rows: int = Field(
         default=25,
-        description="Сколько строк «текста» внизу слева считать плашкой (на MEDIA MIX 69: 109–128 с плашкой, 0–3 без)",
+        description=(
+            "Сколько строк «текста» внизу кадра (в пересчёте на 1080p) считать подписью спикера; "
+            "на таких планах кадр показывается целиком на размытом фоне"
+        ),
     )
-    reframe_scene_threshold: float = Field(
-        default=0.3,
-        description="Порог смены плана для ffmpeg select=scene (0–1)",
+    face_min_score: float = Field(
+        default=0.85,
+        description="Уверенность YuNet, ниже которой находка не считается лицом (блики и предметы в тёмных сценах)",
+    )
+    face_min_height_ratio: float = Field(
+        default=0.06,
+        description="Мин. высота лица относительно кадра; мельче — общий план, показываем кадр целиком",
+    )
+    cut_threshold: float = Field(
+        default=0.55,
+        description="Порог склейки: среднее отличие нормированных 32×18 «отпечатков» соседних кадров",
     )
 
     face_crop_enabled: bool = Field(

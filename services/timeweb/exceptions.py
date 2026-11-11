@@ -15,5 +15,9 @@ class TimewebQuotaError(TimewebAPIError):
     """402 token_limit_exceeded: у AI-агента закончился лимит токенов — повторять бессмысленно."""
 
 
+class TimewebModerationError(TimewebAPIError):
+    """Провайдер модели (OpenAI) отклонил запрос модерацией — тот же текст повторять бессмысленно."""
+
+
 class TimewebParseError(TimewebError):
     """Ответ модели не удалось распарсить как JSON."""

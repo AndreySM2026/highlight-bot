@@ -1,20 +1,23 @@
 """
-Кадрирование горизонтального видео в 9:16 по монтажным планам.
+Кадрирование горизонтального видео в 9:16.
 
-Клип делится на планы (по сменам сцены). На каждом плане ищем лица:
-- один человек (или двое рядом) — обычный кадр 9:16 по центру лица;
-- два человека далеко друг от друга — разделённый экран: левый сверху, правый снизу.
+Клип анализируется плотно (ANALYSIS_FPS кадров в секунду): на каждом кадре ищем лица,
+подпись спикера и «отпечаток» картинки для поиска склеек. Клип делится на планы,
+и для каждого плана выбирается раскладка по большинству кадров:
+- single — один спикер (или двое рядом): окно 9:16 по медианному положению лица;
+- split  — два спикера далеко друг от друга: левый сверху, правый снизу;
+- fit    — кадр целиком по центру на размытом фоне: перебивки без людей, общие планы,
+           неуверенные находки, подпись спикера в кадре (чтобы её не резать).
 
-Всё рендерится одним проходом ffmpeg: позиции кадра — функции времени t,
-разделённый экран накладывается поверх обычного только на своих планах.
+Всё рендерится одним проходом ffmpeg: позиции окон — функции времени t,
+раскладки накладываются друг на друга только на своих планах.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -23,17 +26,20 @@ import structlog
 
 from config.settings import settings
 from services.video.aspect import TARGET_HEIGHT, TARGET_WIDTH, DisplayGeometry
-from services.video.ffmpeg import run_ffmpeg
+from services.video.ffmpeg_paths import get_ffmpeg_binary
 
 logger = structlog.get_logger(__name__)
 
 HALF_HEIGHT = TARGET_HEIGHT // 2
 _HALF_ASPECT = TARGET_WIDTH / HALF_HEIGHT  # 1080×960
 
+ANALYSIS_FPS = 4
+ANALYSIS_WIDTH = 640
+MIN_SHOT_SEC = 1.2  # короче — микрокадр: сливаем с соседним планом
+LAYOUT_MAJORITY = 0.6  # доля кадров плана, нужная для single/split
+
 # YuNet (opencv_zoo, 2023mar): нейросетевой детектор, видит лица в профиль и на крупных планах.
-# Каскады Хаара на студийном видео находили лица в решётке на стене и пропускали крупные планы.
 _YUNET_MODEL = Path(__file__).resolve().parents[2] / "models" / "face_detection_yunet_2023mar.onnx"
-_DETECT_WIDTH = 640
 _detector: cv2.FaceDetectorYN | None = None
 
 
@@ -41,7 +47,7 @@ def _get_detector() -> cv2.FaceDetectorYN:
     global _detector
     if _detector is None:
         _detector = cv2.FaceDetectorYN.create(
-            str(_YUNET_MODEL), "", (_DETECT_WIDTH, _DETECT_WIDTH), score_threshold=0.75
+            str(_YUNET_MODEL), "", (ANALYSIS_WIDTH, ANALYSIS_WIDTH), score_threshold=settings.face_min_score
         )
     return _detector
 
@@ -55,14 +61,21 @@ class Face:
 
 
 @dataclass
+class FrameInfo:
+    t: float
+    faces: list[Face]
+    signature: np.ndarray
+    plate: bool
+
+
+@dataclass
 class Shot:
     start: float
     end: float
-    layout: str = "single"  # single | split
-    # single: центр кадра; split: [левый, правый]
+    layout: str = "fit"  # single | split | fit
+    # single: [лицо]; split: [левый, правый]
     faces: list[Face] = field(default_factory=list)
-    # Верх плашки с именем гостя (доля высоты кадра), если она видна на плане
-    plate_top: float | None = None
+    reason: str = ""
 
 
 @dataclass
@@ -71,11 +84,10 @@ class ReframePlan:
 
     @property
     def split_ranges(self) -> list[tuple[float, float]]:
-        return [(s.start, s.end) for s in self.shots if s.layout == "split"]
+        return self._ranges("split")
 
-    @property
-    def plate_shots(self) -> list[Shot]:
-        return [s for s in self.shots if s.layout == "single" and s.plate_top is not None]
+    def _ranges(self, layout: str) -> list[tuple[float, float]]:
+        return [(s.start, s.end) for s in self.shots if s.layout == layout]
 
     def save(self, path: Path) -> None:
         path.write_text(json.dumps({"split_ranges": self.split_ranges}), encoding="utf-8")
@@ -96,124 +108,206 @@ def layout_path_for(clip_path: Path) -> Path:
     return clip_path.with_suffix(".layout.json")
 
 
-# ---------- детекция ----------
+# ---------- анализ кадра ----------
 
 
-def detect_name_plate(image_path: Path) -> float | None:
-    """
-    Плашка с именем гостя, вшитая при монтаже в левый нижний угол.
-    Признак — строки белого текста: в такой строке много переходов «светлое/тёмное»,
-    у белой одежды или бликов их почти нет. Возвращает верх плашки (доля высоты) или None.
-    На MEDIA MIX 69: на кадрах с плашкой 109–128 текстовых строк, без плашки 0–3.
-    """
-    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        return None
-    height, width = image.shape
-    top = int(height * 0.66)
-    band = image[top : int(height * 0.98), : int(width * 0.6)]
-    bright = (band > 200).astype(np.int8)
-    transitions = np.abs(np.diff(bright, axis=1)).sum(axis=1)
-    text_rows = np.nonzero(transitions >= 20)[0]
-    if len(text_rows) < settings.plate_min_text_rows:
-        return None
-    return (top + int(text_rows[0])) / height
-
-
-def detect_faces(image_path: Path) -> list[Face]:
-    image = cv2.imread(str(image_path))
-    if image is None:
-        return []
+def detect_faces_bgr(image: np.ndarray, scale_to_display: float) -> list[Face]:
+    """Лица на кадре анализа; координаты пересчитаны в пиксели исходного видео."""
     height, width = image.shape[:2]
-    ratio = _DETECT_WIDTH / width
-    small = cv2.resize(image, (_DETECT_WIDTH, int(round(height * ratio))))
     detector = _get_detector()
-    detector.setInputSize((small.shape[1], small.shape[0]))
-    _, detections = detector.detect(small)
+    detector.setInputSize((width, height))
+    _, detections = detector.detect(image)
     if detections is None:
         return []
-
     faces = [
         Face(
-            cx=(d[0] + d[2] / 2) / ratio,
-            cy=(d[1] + d[3] / 2) / ratio,
-            w=d[2] / ratio,
-            h=d[3] / ratio,
+            cx=(d[0] + d[2] / 2) * scale_to_display,
+            cy=(d[1] + d[3] / 2) * scale_to_display,
+            w=d[2] * scale_to_display,
+            h=d[3] * scale_to_display,
         )
         for d in detections
+        if d[3] >= height * settings.face_min_height_ratio
     ]
-    # Мелкие лица на заднем плане (зрители, отражения) не в счёт
-    biggest = max(f.h for f in faces)
-    return [f for f in faces if f.h >= biggest * 0.55 and f.h >= height * 0.05]
-
-
-def classify_faces(faces: list[Face], frame_width: float) -> tuple[str, list[Face]]:
     if not faces:
-        return "none", []
-    if len(faces) == 1:
-        return "single", faces
-    if len(faces) > 2:
-        # Общий план студии: разделённый экран на троих не собрать — кадр по самому крупному лицу
-        return "single", [max(faces, key=lambda f: f.h)]
-    left = min(faces, key=lambda f: f.cx)
-    right = max(faces, key=lambda f: f.cx)
-    if right.cx - left.cx >= frame_width * settings.split_min_distance_ratio:
-        return "split", [left, right]
-    # Двое рядом помещаются в один кадр 9:16 — центр между ними
-    mid = Face((left.cx + right.cx) / 2, (left.cy + right.cy) / 2, max(left.w, right.w), max(left.h, right.h))
-    return "single", [mid]
+        return []
+    # Мелкие лица на заднем плане (зрители, отражения, постеры) не в счёт
+    biggest = max(f.h for f in faces)
+    return [f for f in faces if f.h >= biggest * 0.5]
 
 
-# ---------- планы ----------
+def detect_name_plate_bgr(image: np.ndarray) -> bool:
+    """
+    Подпись спикера, вшитая при монтаже внизу кадра. Признак — строки белого текста:
+    в такой строке много переходов «светлое/тёмное», у белой одежды и бликов их почти нет.
+    На MEDIA MIX 69 (1080p): 109–128 текстовых строк с подписью, 0–3 без неё.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    height, _ = gray.shape
+    band = gray[int(height * 0.62) : int(height * 0.98), :]
+    bright = (band > 200).astype(np.int8)
+    transitions = np.abs(np.diff(bright, axis=1)).sum(axis=1)
+    text_rows = int((transitions >= 16).sum())
+    return text_rows >= settings.plate_min_text_rows * height / 1080
 
 
-async def _scene_cuts(video_path: Path, start: float, duration: float) -> list[float]:
-    stderr = await run_ffmpeg(
-        [
-            "-ss", f"{start:.3f}",
-            "-t", f"{duration:.3f}",
-            "-i", str(video_path),
-            "-an",
-            "-vf", f"scale=320:-2,select='gt(scene,{settings.reframe_scene_threshold})',showinfo",
-            "-f", "null", "-",
-        ],
-        label="reframe_scenes",
-        timeout=max(60.0, duration * 2),
+def frame_signature(image: np.ndarray) -> np.ndarray:
+    """Уменьшенная картинка, нормированная по яркости и контрасту: склейки видны и в тёмных сценах."""
+    small = cv2.resize(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (32, 18), interpolation=cv2.INTER_AREA)
+    small = small.astype(np.float32)
+    return (small - small.mean()) / (small.std() + 4.0)
+
+
+def _analyze_frame(image: np.ndarray, t: float, scale_to_display: float) -> FrameInfo:
+    return FrameInfo(
+        t=t,
+        faces=detect_faces_bgr(image, scale_to_display),
+        signature=frame_signature(image),
+        plate=detect_name_plate_bgr(image),
     )
-    cuts = sorted({round(float(t), 2) for t in re.findall(r"pts_time:([0-9.]+)", stderr)})
-    return [c for c in cuts if 0.0 < c < duration]
 
 
-def _shots_from_cuts(cuts: list[float], duration: float, min_len: float = 0.8) -> list[Shot]:
-    bounds = [0.0, *cuts, duration]
-    shots: list[Shot] = []
-    for a, b in zip(bounds, bounds[1:]):
-        if shots and b - a < min_len:
-            shots[-1].end = b  # слишком короткий план приклеиваем к предыдущему
-            continue
-        shots.append(Shot(start=a, end=b))
-    if len(shots) > 1 and shots[0].end - shots[0].start < min_len:
-        shots[1].start = 0.0
-        shots.pop(0)
-    return shots
-
-
-async def _inspect_frame(
-    video_path: Path, timestamp: float, work_dir: Path, idx: int
-) -> tuple[list[Face], float | None]:
-    """Лица и плашка с именем на одном кадре."""
-    frame = work_dir / f"_reframe_{idx}.jpg"
+async def analyze_clip(
+    video_path: Path,
+    *,
+    start: float,
+    duration: float,
+    display: DisplayGeometry,
+) -> list[FrameInfo]:
+    """Декодирует клип ANALYSIS_FPS кадров/с в память и анализирует каждый кадр."""
+    width = ANALYSIS_WIDTH
+    height = int(round(display.display_height * width / display.display_width / 2)) * 2
+    frame_bytes = width * height * 3
+    scale_to_display = display.display_width / width
+    proc = await asyncio.create_subprocess_exec(
+        get_ffmpeg_binary(),
+        "-v", "error",
+        "-ss", f"{start:.3f}",
+        "-t", f"{duration:.3f}",
+        "-i", str(video_path),
+        "-an",
+        "-vf", f"fps={ANALYSIS_FPS},scale={width}:{height}",
+        "-f", "rawvideo",
+        "-pix_fmt", "bgr24",
+        "-",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    frames: list[FrameInfo] = []
+    index = 0
     try:
-        await run_ffmpeg(
-            ["-ss", f"{timestamp:.3f}", "-i", str(video_path), "-frames:v", "1", "-q:v", "3", str(frame)],
-            label="reframe_frame",
-            timeout=45,
-        )
-        faces = await asyncio.to_thread(detect_faces, frame)
-        plate = await asyncio.to_thread(detect_name_plate, frame) if settings.plate_zoom_enabled else None
-        return faces, plate
+        while True:
+            try:
+                raw = await proc.stdout.readexactly(frame_bytes)
+            except asyncio.IncompleteReadError:
+                break
+            image = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
+            t = index / ANALYSIS_FPS
+            frames.append(await asyncio.to_thread(_analyze_frame, image, t, scale_to_display))
+            index += 1
     finally:
-        frame.unlink(missing_ok=True)
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+    return frames
+
+
+# ---------- планы и раскладки ----------
+
+
+def _dominant_cx(frame: FrameInfo) -> float | None:
+    if not frame.faces:
+        return None
+    return max(frame.faces, key=lambda f: f.h).cx
+
+
+def find_cuts(frames: list[FrameInfo], frame_width: float) -> list[float]:
+    """Склейки: резкая смена структуры картинки или скачок главного лица, который держится."""
+    cuts: list[float] = []
+    for i in range(1, len(frames)):
+        prev, cur = frames[i - 1], frames[i]
+        diff = float(np.abs(cur.signature - prev.signature).mean())
+        jump = False
+        a, b = _dominant_cx(prev), _dominant_cx(cur)
+        if a is not None and b is not None and abs(a - b) > frame_width * 0.2:
+            nxt = _dominant_cx(frames[i + 1]) if i + 1 < len(frames) else b
+            jump = nxt is not None and abs(nxt - a) > frame_width * 0.2
+        count_change = (len(prev.faces) == 0) != (len(cur.faces) == 0) and diff > settings.cut_threshold * 0.6
+        if diff > settings.cut_threshold or jump or count_change:
+            cuts.append((prev.t + cur.t) / 2)
+    return cuts
+
+
+def _segments(cuts: list[float], duration: float) -> list[tuple[float, float]]:
+    bounds = [0.0, *cuts, duration]
+    segs = [(a, b) for a, b in zip(bounds, bounds[1:]) if b > a]
+    # Микрокадры сливаем с соседом: короткий кусок первым — к следующему, иначе — к предыдущему
+    merged: list[list[float]] = []
+    for a, b in segs:
+        if merged and b - a < MIN_SHOT_SEC:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    if len(merged) > 1 and merged[0][1] - merged[0][0] < MIN_SHOT_SEC:
+        merged[1][0] = merged[0][0]
+        merged.pop(0)
+    return [(a, b) for a, b in merged]
+
+
+def _median_face(faces: list[Face]) -> Face:
+    return Face(
+        cx=float(np.median([f.cx for f in faces])),
+        cy=float(np.median([f.cy for f in faces])),
+        w=float(np.median([f.w for f in faces])),
+        h=float(np.median([f.h for f in faces])),
+    )
+
+
+def classify_shot(frames: list[FrameInfo], frame_width: float) -> tuple[str, list[Face], str]:
+    """Раскладка плана по большинству кадров; при сомнениях — fit (кадр целиком на размытом фоне)."""
+    if not frames:
+        return "fit", [], "нет кадров"
+    total = len(frames)
+    if sum(f.plate for f in frames) / total >= 0.3:
+        return "fit", [], "подпись спикера"
+
+    singles: list[Face] = []
+    lefts: list[Face] = []
+    rights: list[Face] = []
+    for frame in frames:
+        faces = frame.faces
+        if len(faces) == 1:
+            singles.append(faces[0])
+        elif len(faces) == 2:
+            left, right = sorted(faces, key=lambda f: f.cx)
+            if right.cx - left.cx >= frame_width * settings.split_min_distance_ratio:
+                lefts.append(left)
+                rights.append(right)
+            else:
+                # Двое рядом помещаются в одно окно — центр между ними
+                singles.append(Face((left.cx + right.cx) / 2, (left.cy + right.cy) / 2, max(left.w, right.w), max(left.h, right.h)))
+
+    if len(lefts) / total >= LAYOUT_MAJORITY:
+        return "split", [_median_face(lefts), _median_face(rights)], f"двое на {len(lefts)}/{total} кадров"
+    if len(singles) / total >= LAYOUT_MAJORITY:
+        face = _median_face(singles)
+        spread = float(np.std([f.cx for f in singles]))
+        if spread > frame_width * 0.12:
+            return "fit", [], "спикер сильно двигается"
+        return "single", [face], f"один на {len(singles)}/{total} кадров"
+    return "fit", [], "нет уверенного спикера"
+
+
+def build_plan(frames: list[FrameInfo], duration: float, display: DisplayGeometry) -> ReframePlan:
+    frame_w = display.display_width
+    shots: list[Shot] = []
+    for a, b in _segments(find_cuts(frames, frame_w), duration):
+        shot_frames = [f for f in frames if a <= f.t < b]
+        layout, faces, reason = classify_shot(shot_frames, frame_w)
+        shots.append(Shot(start=a, end=b, layout=layout, faces=faces, reason=reason))
+    if not shots:
+        shots = [Shot(start=0.0, end=duration, layout="fit", reason="нет кадров")]
+    return ReframePlan(shots=shots)
 
 
 async def plan_reframe(
@@ -222,68 +316,16 @@ async def plan_reframe(
     start: float,
     duration: float,
     display: DisplayGeometry,
-    work_dir: Path,
+    work_dir: Path | None = None,
 ) -> ReframePlan:
-    cuts = await _scene_cuts(video_path, start, duration)
-    shots = _shots_from_cuts(cuts, duration)
-    frame_w = display.display_width
-
-    previous: Shot | None = None
-    for idx, shot in enumerate(shots):
-        length = shot.end - shot.start
-        samples = [0.5] if length < 4 else ([0.2, 0.5, 0.8] if length >= 6 else [0.3, 0.7])
-        best_kind, best_faces = "none", []
-        single_faces: list[Face] = []
-        for j, ratio in enumerate(samples):
-            faces, plate = await _inspect_frame(
-                video_path, start + shot.start + length * ratio, work_dir, idx * 10 + j
-            )
-            if plate is not None:
-                shot.plate_top = plate if shot.plate_top is None else min(shot.plate_top, plate)
-            kind, chosen = classify_faces(faces, frame_w)
-            if kind == "single":
-                single_faces.append(chosen[0])
-            # «Двое» важнее «одного»: на общем плане детектор иногда теряет одного из спикеров
-            rank = {"none": 0, "single": 1, "split": 2}
-            if rank[kind] > rank[best_kind]:
-                best_kind, best_faces = kind, chosen
-        if best_kind == "single" and len(single_faces) > 1:
-            # Спикер двигается внутри плана — ставим кадр по среднему положению лица
-            n = len(single_faces)
-            best_faces = [
-                Face(
-                    cx=sum(f.cx for f in single_faces) / n,
-                    cy=sum(f.cy for f in single_faces) / n,
-                    w=max(f.w for f in single_faces),
-                    h=max(f.h for f in single_faces),
-                )
-            ]
-        if best_kind == "none":
-            if previous is not None:
-                shot.layout, shot.faces = previous.layout, previous.faces
-            else:
-                shot.layout, shot.faces = "single", [Face(frame_w / 2, display.display_height / 2, 0, 0)]
-        else:
-            shot.layout, shot.faces = best_kind, best_faces
-        previous = shot
-
-    # Планы без лиц в начале клипа берут раскладку первого плана с лицами
-    first_found = next((s for s in shots if s.faces and s.faces[0].h > 0), None)
-    if first_found:
-        for s in shots:
-            if s is first_found:
-                break
-            if not (s.faces and s.faces[0].h > 0):
-                s.layout, s.faces = first_found.layout, first_found.faces
-
+    frames = await analyze_clip(video_path, start=start, duration=duration, display=display)
+    plan = build_plan(frames, duration, display)
     logger.info(
         "reframe_plan",
-        shots=[
-            (round(s.start, 1), round(s.end, 1), s.layout + ("+plate" if s.plate_top is not None else ""))
-            for s in shots
-        ],
+        frames=len(frames),
+        shots=[(round(s.start, 1), round(s.end, 1), s.layout, s.reason) for s in plan.shots],
     )
-    return ReframePlan(shots=shots)
+    return plan
 
 
 # ---------- фильтр ffmpeg ----------
@@ -310,83 +352,41 @@ def _enable_expr(ranges: list[tuple[float, float]]) -> str:
     return "'" + "+".join(f"between(t,{a:.3f},{b - 0.001:.3f})" for a, b in ranges) + "'"
 
 
-def build_reframe_filter(plan: ReframePlan, display: DisplayGeometry) -> str:
-    """filter_complex с выходом [v] размером 1080×1920."""
+def _fit_graph(display: DisplayGeometry) -> str:
+    """[fin] → [fit]: кадр целиком по ширине 1080 поверх размытой и чуть затемнённой копии."""
+    fg_h = _even(TARGET_WIDTH * display.display_height / display.display_width)
+    return (
+        "[fin]split=2[fgsrc][bgsrc];"
+        f"[bgsrc]scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={TARGET_WIDTH}:{TARGET_HEIGHT},scale=270:480,boxblur=12:2,"
+        f"scale={TARGET_WIDTH}:{TARGET_HEIGHT},eq=brightness=-0.08,setsar=1[bg];"
+        f"[fgsrc]scale={TARGET_WIDTH}:{fg_h}:flags=lanczos,setsar=1[fg];"
+        "[bg][fg]overlay=0:(H-h)/2[fit]"
+    )
+
+
+def _single_chain(plan: ReframePlan, display: DisplayGeometry) -> str:
     W, H = display.display_width, display.display_height
     shots = plan.shots
-    has_single = any(s.layout == "single" for s in shots)
-    has_split = any(s.layout == "split" for s in shots)
-
-    # Обычный кадр: масштаб по высоте до 1920, окно 1080 по горизонтали
     scale = TARGET_HEIGHT / H
     scaled_w = max(TARGET_WIDTH, _even(W * scale))
     last_x = (scaled_w - TARGET_WIDTH) / 2
-    single_x: list[float] = []
+    xs: list[float] = []
     for s in shots:
         if s.layout == "single":
             last_x = _clamp(s.faces[0].cx * scale - TARGET_WIDTH / 2, 0, scaled_w - TARGET_WIDTH)
-        single_x.append(last_x)
-
-    single_chain = (
-        f"scale={scaled_w}:{TARGET_HEIGHT}:flags=lanczos,"
-        f"crop={TARGET_WIDTH}:{TARGET_HEIGHT}:x={_piecewise(shots, single_x)}:y=0,setsar=1"
+        xs.append(last_x)
+    return (
+        f"[sin]scale={scaled_w}:{TARGET_HEIGHT}:flags=lanczos,"
+        f"crop={TARGET_WIDTH}:{TARGET_HEIGHT}:x={_piecewise(shots, xs)}:y=0,setsar=1[single]"
     )
-
-    # Слой «наезд» для планов с плашкой: показываем кадр только выше её верхнего края
-    plate_shots = plan.plate_shots if has_single else []
-    zoom_chain = ""
-    if plate_shots:
-        visible = max(0.55, min(s.plate_top for s in plate_shots) - 0.02) * H
-        zscale = TARGET_HEIGHT / visible
-        zoom_w = max(TARGET_WIDTH, _even(W * zscale))
-        zoom_h = _even(H * zscale)
-        zoom_x: list[float] = []
-        last_zx = (zoom_w - TARGET_WIDTH) / 2
-        for s in shots:
-            if s.layout == "single":
-                last_zx = _clamp(s.faces[0].cx * zscale - TARGET_WIDTH / 2, 0, zoom_w - TARGET_WIDTH)
-            zoom_x.append(last_zx)
-        zoom_chain = (
-            f"scale={zoom_w}:{zoom_h}:flags=lanczos,"
-            f"crop={TARGET_WIDTH}:{TARGET_HEIGHT}:x={_piecewise(shots, zoom_x)}:y=0,setsar=1"
-        )
-
-    if not has_split and not zoom_chain:
-        return f"[0:v]{single_chain}[v]"
-
-    split_graph = _split_graph(plan, display) if has_split else ""
-
-    inputs: list[str] = []
-    parts: list[str] = []
-    if has_single:
-        inputs.append("one")
-        parts.append(f"[one]{single_chain}[single]")
-    if zoom_chain:
-        inputs.append("zin")
-        parts.append(f"[zin]{zoom_chain}[zoom]")
-    if has_split:
-        inputs += ["top", "bot"]
-        parts.append(split_graph)
-
-    current = "single" if has_single else "split"
-    if zoom_chain:
-        ranges = [(s.start, s.end) for s in plate_shots]
-        parts.append(f"[{current}][zoom]overlay=0:0:enable={_enable_expr(ranges)}[withzoom]")
-        current = "withzoom"
-    if has_split and has_single:
-        parts.append(f"[{current}][split]overlay=0:0:enable={_enable_expr(plan.split_ranges)}[v]")
-    else:
-        parts.append(f"[{current}]null[v]")
-
-    head = f"[0:v]split={len(inputs)}" + "".join(f"[{name}]" for name in inputs)
-    return ";".join([head, *parts])
 
 
 def _split_graph(plan: ReframePlan, display: DisplayGeometry) -> str:
-    """Разделённый экран: [top] и [bot] → [split] 1080×1920."""
+    """[top] и [bot] → [split] 1080×1920: две половинки 1080×960 вокруг лиц."""
     W, H = display.display_width, display.display_height
     shots = plan.shots
-    # Половинки 1080×960: окно вокруг лица, размер одинаковый на весь клип (crop не умеет менять w/h)
+    # Размер окна одинаковый на весь клип (crop не умеет менять w/h)
     split_faces = [f for s in shots if s.layout == "split" for f in s.faces]
     face_h = sorted(f.h for f in split_faces)[len(split_faces) // 2]
     crop_h = _clamp(face_h * settings.split_face_zoom, H * 0.4, H)
@@ -410,20 +410,41 @@ def _split_graph(plan: ReframePlan, display: DisplayGeometry) -> str:
         top_xy.append(last_top)
         bottom_xy.append(last_bottom)
 
-    def half_chain(xy: list[tuple[float, float]]) -> str:
+    def half(label_in: str, label_out: str, xy: list[tuple[float, float]]) -> str:
         xs = _piecewise(shots, [p[0] for p in xy])
         ys = _piecewise(shots, [p[1] for p in xy])
         return (
-            f"crop={crop_w}:{crop_h}:x={xs}:y={ys},"
-            f"scale={TARGET_WIDTH}:{HALF_HEIGHT}:flags=lanczos,setsar=1"
+            f"[{label_in}]crop={crop_w}:{crop_h}:x={xs}:y={ys},"
+            f"scale={TARGET_WIDTH}:{HALF_HEIGHT}:flags=lanczos,setsar=1[{label_out}]"
         )
 
-    return (
-        f"[top]{half_chain(top_xy)}[t];"
-        f"[bot]{half_chain(bottom_xy)}[b];"
-        "[t][b]vstack=inputs=2[split]"
-    )
+    return f"{half('top', 't', top_xy)};{half('bot', 'b', bottom_xy)};[t][b]vstack=inputs=2[split]"
 
 
-def plan_debug(plan: ReframePlan) -> list[dict]:
-    return [asdict(s) for s in plan.shots]
+def build_reframe_filter(plan: ReframePlan, display: DisplayGeometry) -> str:
+    """filter_complex с выходом [v] 1080×1920: база + раскладки поверх на своих планах."""
+    layouts = {s.layout for s in plan.shots}
+    inputs: list[str] = []
+    parts: list[str] = []
+    if "fit" in layouts:
+        inputs.append("fin")
+        parts.append(_fit_graph(display))
+    if "single" in layouts:
+        inputs.append("sin")
+        parts.append(_single_chain(plan, display))
+    if "split" in layouts:
+        inputs += ["top", "bot"]
+        parts.append(_split_graph(plan, display))
+
+    # База — первая раскладка из fit/single/split; остальные накладываются на своих планах
+    order = [name for name in ("fit", "single", "split") if name in layouts]
+    current = order[0]
+    for idx, name in enumerate(order[1:], start=1):
+        out = "v" if idx == len(order) - 1 else f"l{idx}"
+        parts.append(f"[{current}][{name}]overlay=0:0:enable={_enable_expr(plan._ranges(name))}[{out}]")
+        current = out
+    if len(order) == 1:
+        parts.append(f"[{current}]null[v]")
+
+    head = f"[0:v]split={len(inputs)}" + "".join(f"[{name}]" for name in inputs)
+    return ";".join([head, *parts])

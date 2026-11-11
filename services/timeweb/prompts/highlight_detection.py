@@ -37,6 +37,36 @@ def build_highlight_prompt(activity_map: ActivityMap, context: VideoContext | No
     blocks = build_speech_blocks(activity_map)
     if activity_map.transcript_segments:
         blocks = attach_transcript_to_blocks(blocks, activity_map.transcript_segments)
+    return build_highlight_prompt_for_blocks(blocks, context)
+
+
+def split_blocks_into_parts(blocks: list[SpeechBlock], max_chars: int) -> list[list[SpeechBlock]]:
+    """
+    Делит расшифровку на части подряд идущих фраз. Один запрос со всем часовым выпуском
+    упирается в таймаут шлюза (504) — частями по ~25 минут ИИ отвечает стабильно.
+    """
+    parts: list[list[SpeechBlock]] = [[]]
+    size = 0
+    for block in blocks:
+        line = len(_block_line(block)) + 1
+        if parts[-1] and size + line > max_chars:
+            parts.append([])
+            size = 0
+        parts[-1].append(block)
+        size += line
+    parts = [p for p in parts if p]
+    # Короткий хвост отдельным запросом не нужен — приклеиваем к предыдущей части
+    if len(parts) > 1 and sum(len(_block_line(b)) + 1 for b in parts[-1]) < max_chars * 0.3:
+        parts[-2].extend(parts.pop())
+    return parts
+
+
+def build_highlight_prompt_for_blocks(
+    blocks: list[SpeechBlock],
+    context: VideoContext | None = None,
+    *,
+    part_note: str = "",
+) -> str:
     blocks = _fit_blocks_to_budget(blocks, settings.highlight_prompt_max_chars)
     transcript_lines = "\n".join(_block_line(b) for b in blocks)
 
@@ -55,7 +85,7 @@ def build_highlight_prompt(activity_map: ActivityMap, context: VideoContext | No
 «Медиамикс» — шоу о маркетинге. Аудитория — маркетологи, предприниматели, SMM-специалисты.
 Из расшифровки длинного выпуска выбери отрывки, которые сами по себе соберут просмотры и подписки.
 {context_block}
-Расшифровка разбита на фразы. Формат строки: [номер] начало–конец (длительность) текст.
+{part_note}Расшифровка разбита на фразы. Формат строки: [номер] начало–конец (длительность) текст.
 
 КАК ВЫБИРАТЬ ОТРЫВОК
 1. Отрывок — это НЕПРЕРЫВНЫЙ диапазон фраз: с фразы start_block по фразу end_block включительно.

@@ -235,6 +235,11 @@ async def run_analysis_pipeline(
         ) from exc
     except NoGoodHighlightsError as exc:
         logger.warning("highlights_none_approved", job_id=job_id, error=str(exc))
+        if "модерация" in str(exc):
+            raise RuntimeError(
+                "ИИ-модель отказалась анализировать этот выпуск: тема попала под её модерацию "
+                "(так бывает с острыми темами). Попробуйте другое видео."
+            ) from exc
         raise RuntimeError(
             "В этом видео не нашлось законченных мыслей, которые работают как отдельный клип."
         ) from exc

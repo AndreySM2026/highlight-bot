@@ -26,6 +26,7 @@ _model_lock = threading.Lock()
 _transcribe_lock = threading.Lock()
 
 _SAMPLE_RATE = 16000
+_CUT_SEARCH_SEC = 15  # где искать паузу для разреза кусков: ±15 с от границы
 
 
 def _cpu_threads() -> int:
@@ -81,15 +82,39 @@ def _iter_audio_chunks(audio_path: Path, chunk_sec: int) -> Iterator[tuple[float
             yield 0.0, str(audio_path)
             return
 
-        frames_per_chunk = chunk_sec * _SAMPLE_RATE
+        target = chunk_sec * _SAMPLE_RATE
+        slack = _CUT_SEARCH_SEC * _SAMPLE_RATE
+        buffer = np.zeros(0, dtype=np.float32)
         offset = 0.0
+        finished = False
         while True:
-            raw = wav.readframes(frames_per_chunk)
-            if not raw:
+            # Держим в буфере кусок + запас, чтобы было где искать паузу для разреза
+            while not finished and len(buffer) < target + slack:
+                raw = wav.readframes(target)
+                if not raw:
+                    finished = True
+                    break
+                buffer = np.concatenate([buffer, np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0])
+            if len(buffer) == 0:
                 break
-            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            yield offset, samples
-            offset += len(samples) / _SAMPLE_RATE
+            if finished and len(buffer) <= target + slack:
+                yield offset, buffer
+                break
+            cut = _quietest_point(buffer, target - slack, target + slack)
+            yield offset, buffer[:cut]
+            offset += cut / _SAMPLE_RATE
+            buffer = buffer[cut:]
+
+
+def _quietest_point(samples: np.ndarray, lo: int, hi: int) -> int:
+    """Самое тихое место (окно 0.25 с) между lo и hi — режем кусок там, а не посреди слова."""
+    window = _SAMPLE_RATE // 4
+    lo, hi = max(window, lo), min(len(samples) - window, hi)
+    if hi <= lo:
+        return min(len(samples), max(lo, 1))
+    region = samples[lo - window // 2 : hi + window // 2] ** 2
+    energy = np.convolve(region, np.ones(window, dtype=np.float32), mode="valid")
+    return lo + int(np.argmin(energy[: hi - lo]))
 
 
 def _transcribe_sync(audio_path: Path, *, duration_sec: float) -> list[TranscriptSegment]:
@@ -112,15 +137,20 @@ def _transcribe_locked(audio_path: Path, *, duration_sec: float) -> list[Transcr
             beam_size=beam_size,
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 400},
+            # Метки по словам точнее меток сегмента: по ним клип заканчивается ровно на последнем слове
+            word_timestamps=True,
         )
         for item in segments_iter:
             text = normalize_speech_text(item.text)
             if not text:
                 continue
+            words = getattr(item, "words", None) or []
+            start = words[0].start if words else item.start
+            end = words[-1].end if words else item.end
             segments.append(
                 TranscriptSegment(
-                    start=round(item.start + offset, 2),
-                    end=round(item.end + offset, 2),
+                    start=round(start + offset, 2),
+                    end=round(max(end, start + 0.1) + offset, 2),
                     text=text,
                 )
             )

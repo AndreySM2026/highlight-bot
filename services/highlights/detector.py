@@ -17,10 +17,13 @@ from services.highlights.speech_blocks import build_speech_blocks, segment_from_
 from services.highlights.transcript import attach_transcript_to_blocks
 from services.highlights.verify import Candidate, verify_candidates
 from services.timeweb.client import TimewebClient
-from services.timeweb.exceptions import TimewebQuotaError
+from services.timeweb.exceptions import TimewebModerationError, TimewebQuotaError
 from services.timeweb.json_parser import extract_json
 from services.timeweb.prompts.common import retry_note
-from services.timeweb.prompts.highlight_detection import build_highlight_prompt
+from services.timeweb.prompts.highlight_detection import (
+    build_highlight_prompt_for_blocks,
+    split_blocks_into_parts,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -115,8 +118,8 @@ async def _call_with_retries(label: str, func):
     for attempt in range(1, AI_ATTEMPTS + 1):
         try:
             return await func(attempt)
-        except TimewebQuotaError:
-            raise  # лимит токенов исчерпан — повтор только сожжёт время
+        except (TimewebQuotaError, TimewebModerationError):
+            raise  # лимит исчерпан / отказ модерации — тот же запрос повторять бессмысленно
         except Exception as exc:
             last_error = exc
             logger.warning(
@@ -128,6 +131,37 @@ async def _call_with_retries(label: str, func):
             if attempt < AI_ATTEMPTS:
                 await asyncio.sleep(AI_RETRY_DELAY_SEC * attempt)
     raise HighlightsUnavailableError(f"{label}: {last_error}") from last_error
+
+
+async def _verify_with_moderation_fallback(
+    client: TimewebClient,
+    candidates: list[Candidate],
+    blocks: list[SpeechBlock],
+) -> list[Candidate]:
+    """
+    Проверка редактором. Если модерация провайдера отклонила общий запрос (как с выпуском
+    о рисках ИИ), проверяем отрывки по одному и пропускаем только отклонённые.
+    """
+
+    async def verify(attempt: int, items: list[Candidate] = candidates) -> list[Candidate]:
+        return await verify_candidates(client, items, blocks, attempt=attempt)
+
+    try:
+        return await _call_with_retries("highlights_verify", verify)
+    except TimewebModerationError:
+        logger.warning("highlights_verify_moderated_batch", count=len(candidates))
+
+    approved: list[Candidate] = []
+    for cand in candidates:
+
+        async def verify_one(attempt: int, cand: Candidate = cand) -> list[Candidate]:
+            return await verify_candidates(client, [cand], blocks, attempt=attempt)
+
+        try:
+            approved.extend(await _call_with_retries("highlights_verify_one", verify_one))
+        except TimewebModerationError:
+            logger.warning("highlights_verify_moderated_clip", first=cand.first, last=cand.last, title=cand.title)
+    return approved
 
 
 async def detect_highlights(
@@ -144,26 +178,65 @@ async def detect_highlights(
         blocks = attach_transcript_to_blocks(blocks, activity_map.transcript_segments)
     if not blocks or not any(b.text for b in blocks):
         raise HighlightsUnavailableError("нет расшифровки речи")
-    prompt = build_highlight_prompt(activity_map, context)
 
-    async def select(attempt: int) -> tuple[dict, list[Candidate]]:
-        response = await client.call_agent(prompt + retry_note(attempt))
-        data = extract_json(response)
-        candidates = _parse_candidates(data, blocks)
-        if not candidates:
-            raise ValueError(
-                f"нет пригодных отрывков в ответе (сырых: {len(data.get('segments', []) or [])}); "
-                f"начало ответа: {response[:200]!r}"
-            )
-        return data, candidates
+    parts = split_blocks_into_parts(blocks, settings.highlight_part_chars)
+    candidates: list[Candidate] = []
+    themes: list[str] = []
+    recommended_total = 0
+    failures: list[Exception] = []
+    for index, part in enumerate(parts, start=1):
+        part_note = (
+            f"Это часть {index} из {len(parts)} выпуска — выбирай отрывки только из неё.\n"
+            if len(parts) > 1
+            else ""
+        )
+        prompt = build_highlight_prompt_for_blocks(part, context, part_note=part_note)
 
-    data, candidates = await _call_with_retries("highlights_select", select)
-    logger.info("highlights_selected", count=len(candidates))
+        async def select(attempt: int, prompt: str = prompt) -> tuple[dict, list[Candidate]]:
+            response = await client.call_agent(prompt + retry_note(attempt))
+            data = extract_json(response)
+            found = _parse_candidates(data, blocks)
+            if not found:
+                raise ValueError(
+                    f"нет пригодных отрывков в ответе (сырых: {len(data.get('segments', []) or [])}); "
+                    f"начало ответа: {response[:200]!r}"
+                )
+            return data, found
 
-    async def verify(attempt: int) -> list[Candidate]:
-        return await verify_candidates(client, candidates, blocks, attempt=attempt)
+        try:
+            data, found = await _call_with_retries("highlights_select", select)
+        except TimewebModerationError as exc:
+            logger.warning("highlights_part_moderated", part=index, parts=len(parts))
+            failures.append(exc)
+            continue
+        except HighlightsUnavailableError as exc:
+            if len(parts) == 1:
+                raise
+            logger.warning("highlights_part_failed", part=index, parts=len(parts), error=str(exc)[:300])
+            failures.append(exc)
+            continue
+        candidates.extend(found)
+        themes.append(str(data.get("video_theme", "")))
+        recommended_total += int(data.get("recommended_clip_count") or len(found))
 
-    approved = await _call_with_retries("highlights_verify", verify)
+    if not candidates:
+        if failures and all(isinstance(f, TimewebModerationError) for f in failures):
+            raise NoGoodHighlightsError("модерация ИИ отклонила текст выпуска")
+        raise HighlightsUnavailableError(f"ни одна часть не обработана: {failures[-1] if failures else '—'}")
+
+    # Лучшие кандидаты без пересечений — на проверку редактору
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    picked: list[Candidate] = []
+    for cand in candidates:
+        if any(cand.first <= other.last and other.first <= cand.last for other in picked):
+            continue
+        picked.append(cand)
+        if len(picked) >= settings.highlight_verify_max_candidates:
+            break
+    picked.sort(key=lambda c: c.first)
+    logger.info("highlights_selected", count=len(picked), parts=len(parts), raw=len(candidates))
+
+    approved = await _verify_with_moderation_fallback(client, picked, blocks)
     if not approved:
         raise NoGoodHighlightsError("редактор отклонил все отрывки")
 
@@ -171,15 +244,15 @@ async def detect_highlights(
         approved,
         blocks,
         activity_map,
-        recommended=int(data.get("recommended_clip_count") or len(approved)),
-        theme=str(data.get("video_theme", "")),
+        recommended=min(recommended_total or len(approved), len(approved)),
+        theme=themes[0] if themes else "",
     )
     if not result.segments:
         raise NoGoodHighlightsError("после проверки не осталось отрывков нужной длины")
     logger.info(
         "highlights_detected",
         source="qwen",
-        selected=len(candidates),
+        selected=len(picked),
         approved=len(approved),
         count=len(result.segments),
         video_theme=result.video_theme[:120] if result.video_theme else None,
